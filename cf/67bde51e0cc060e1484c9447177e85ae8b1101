@@ -1,0 +1,19 @@
+profile/README.md
+  s_b594cc9478b078::t_983a6d33f2bc03 3-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf67bde51e0cc060e1484c9447177e85ae8b1101",
+  "prompts": {},
+  "sessions": {
+    "s_b594cc9478b078": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed718d0d9ffezbFbPGXWUQRwzy",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Zac Rosenbauer <me@zrosenbauer.com>"
+    }
+  }
+}
