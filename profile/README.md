@@ -1,3 +1,6 @@
 ![bytefarm](../assets/banner.png)
 
-a little farm growing open source, one byte at a time.
+<p align="center">
+  Open-source developer tools for building with agents.<br />
+  <a href="https://bytefarm.dev">Explore our projects</a>
+</p>
