@@ -1,0 +1,8 @@
+{
+  "hf:zai-org/GLM-5.3": { "context": 524288, "output": 65536 },
+  "hf:zai-org/GLM-5.3-Flash": { "context": 524288, "output": 65536 },
+  "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017": { "context": 524288, "output": 65536 },
+  "hf:openai/gpt-oss-120b": { "context": 131072, "output": 65536 },
+  "hf:moonshotai/Kimi-K3": { "context": 524288, "output": 65536 },
+  "hf:Qwen/Qwen3.8-27B": { "context": 262144, "output": 65536 }
+}

@@ -1,0 +1,282 @@
+name: Parallel pull review
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: Open, non-draft pull request in the calling repository
+        required: true
+        type: number
+      publish:
+        description: Submit a review and commit status; false generates an artifact only
+        default: false
+        type: boolean
+    secrets:
+      SYNTHETIC_API_KEY:
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: bytefarm-engine-${{ github.repository }}-${{ inputs.pr-number }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: github.repository_owner == 'thebytefarm' && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    outputs:
+      engine-sha: ${{ steps.engine.outputs.sha }}
+      base: ${{ steps.inspect.outputs.base }}
+      head: ${{ steps.inspect.outputs.head }}
+      head-repository: ${{ steps.inspect.outputs.head-repository }}
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      reviewer-timeout: ${{ steps.prepare.outputs.reviewer-timeout }}
+      verdict-timeout: ${{ steps.prepare.outputs.verdict-timeout }}
+      verdict-model: ${{ steps.prepare.outputs.verdict-model }}
+      verdict-context: ${{ steps.prepare.outputs.verdict-context }}
+    steps:
+      - name: Resolve the called workflow's immutable source
+        id: engine
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          url.searchParams.set('audience', 'bytefarm-pull-review-source');
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!response.ok) throw new Error('Cannot resolve trusted workflow source');
+          const { value } = await response.json();
+          const claims = JSON.parse(Buffer.from(value.split('.')[1], 'base64url').toString());
+          if (!claims.job_workflow_ref?.startsWith('thebytefarm/.github/.github/workflows/pull-review.yml@') ||
+              !/^[a-f0-9]{40}$/.test(claims.job_workflow_sha ?? '')) {
+            throw new Error('Unexpected reusable workflow identity');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `sha=${claims.job_workflow_sha}\n`);
+          JS
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ steps.engine.outputs.sha }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Inspect the public PR
+        id: inspect
+        run: node engine/review/cli.mts inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+      - name: Get identity for a pending review status
+        if: inputs.publish
+        id: identity
+        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+      - name: Mark this commit pending before investigation
+        if: inputs.publish
+        run: node engine/review/cli.mts start
+        env:
+          GH_TOKEN: ${{ steps.identity.outputs.token }}
+      - name: Check out trusted policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.inspect.outputs.base }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+      - name: Resolve config, policies, models and diff
+        id: prepare
+        run: node engine/review/cli.mts prepare
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bytefarm-context
+          path: context/
+          retention-days: 7
+          if-no-files-found: error
+
+  review:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    name: Review / ${{ matrix.role }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ needs.prepare.outputs.engine-sha }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bytefarm-context
+          path: context
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          path: source
+          persist-credentials: false
+      - name: Check out untrusted code as review data only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ needs.prepare.outputs.head-repository }}
+          ref: ${{ needs.prepare.outputs.head }}
+          path: head
+          persist-credentials: false
+      - name: Build role-specific prompt
+        id: prompt
+        run: node engine/review/cli.mts prompt "$ROLE"
+        env:
+          ROLE: ${{ matrix.role }}
+      - name: Run specialist
+        id: agent
+        uses: pullfrog/pullfrog@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+        with:
+          prompt_file: context/prompt.md
+          output_schema: ${{ steps.prompt.outputs.schema }}
+          model: openai-compatible/byok
+          effort: high
+          timeout: ${{ needs.prepare.outputs.reviewer-timeout }}
+          push: disabled
+          shell: disabled
+          progress_comments: disabled
+          cwd: source
+        env:
+          OPENAI_COMPATIBLE_BASE_URL: https://api.synthetic.new/openai/v1
+          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          OPENAI_COMPATIBLE_MODEL: ${{ matrix.model }}
+          OPENAI_COMPATIBLE_CONTEXT: ${{ matrix.context }}
+          OPENAI_COMPATIBLE_MAX_OUTPUT: ${{ matrix.output }}
+      - name: Validate specialist output
+        run: node engine/review/cli.mts save "$ROLE"
+        env:
+          ROLE: ${{ matrix.role }}
+          AGENT_RESULT: ${{ steps.agent.outputs.result }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: bytefarm-review-${{ matrix.role }}
+          path: results/${{ matrix.role }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  verdict:
+    needs: [prepare, review]
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ needs.prepare.outputs.engine-sha }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bytefarm-context
+          path: context
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bytefarm-review-*
+          path: results
+          merge-multiple: true
+      - name: Build synthesis prompt
+        id: prompt
+        run: node engine/review/cli.mts prompt verdict
+      - name: Consolidate findings on the cheaper model
+        id: agent
+        uses: pullfrog/pullfrog@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+        with:
+          prompt_file: context/prompt.md
+          output_schema: ${{ steps.prompt.outputs.schema }}
+          model: openai-compatible/byok
+          effort: low
+          timeout: ${{ needs.prepare.outputs.verdict-timeout }}
+          push: disabled
+          shell: disabled
+          progress_comments: disabled
+          cwd: context
+        env:
+          OPENAI_COMPATIBLE_BASE_URL: https://api.synthetic.new/openai/v1
+          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          OPENAI_COMPATIBLE_MODEL: ${{ needs.prepare.outputs.verdict-model }}
+          OPENAI_COMPATIBLE_CONTEXT: ${{ needs.prepare.outputs.verdict-context }}
+          OPENAI_COMPATIBLE_MAX_OUTPUT: "65536"
+      - name: Validate that no finding was lost or invented
+        run: node engine/review/cli.mts save verdict
+        env:
+          AGENT_RESULT: ${{ steps.agent.outputs.result }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bytefarm-review-verdict
+          path: results/verdict.json
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    if: always() && !cancelled() && needs.prepare.result == 'success'
+    needs: [prepare, review, verdict]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ needs.prepare.outputs.engine-sha }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bytefarm-context
+          path: context
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bytefarm-review-*
+          path: results
+          merge-multiple: true
+      - name: Get Pullfrog identity for the sole publishing step
+        if: inputs.publish
+        id: identity
+        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+      - name: Compute verdict and optionally publish
+        run: node engine/review/cli.mts finalize
+        env:
+          GH_TOKEN: ${{ steps.identity.outputs.token }}
+          PUBLISH: ${{ inputs.publish }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: bytefarm-review-summary
+          path: context/review.md
+          retention-days: 7
+          if-no-files-found: ignore
