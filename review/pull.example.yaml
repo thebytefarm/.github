@@ -21,6 +21,10 @@ reviewers:
     model: hf:zai-org/GLM-5.3-Flash
     instructions: ""
     instructions-path: ""
+  risk:
+    model: hf:zai-org/GLM-5.3
+    instructions: ""
+    instructions-path: ""
 
 verdict:
   model: hf:openai/gpt-oss-120b

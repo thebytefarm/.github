@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { reviewSchema } from "./schemas.mts";
+import { reviewSchema, riskSchema } from "./schemas.mts";
 
 type Additions = { instructions?: string; "instructions-path"?: string; model?: string };
 type Config = Additions & {
@@ -15,12 +15,12 @@ const models = {
   security: "hf:zai-org/GLM-5.3",
   standards: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
   design: "hf:zai-org/GLM-5.3-Flash",
+  risk: "hf:zai-org/GLM-5.3",
 };
 const repo = process.env.GITHUB_REPOSITORY!;
 const number = Number(process.env.PR_NUMBER);
-const gh = (path: string, data?: unknown): string =>
-  execFileSync("gh", ["api", path, ...(data ? ["--method", "POST", "--input", "-"] : [])], {
-    input: data ? JSON.stringify(data) : undefined,
+const gh = (path: string): string =>
+  execFileSync("gh", ["api", path], {
     encoding: "utf8",
     timeout: 30000,
   });
@@ -48,12 +48,6 @@ assert(Number.isSafeInteger(number) && number > 0);
 assert.equal(JSON.parse(gh(`repos/${repo}`)).visibility, "public");
 const pull = JSON.parse(gh(`repos/${repo}/pulls/${number}`));
 assert(pull.state === "open" && !pull.draft && pull.head.repo, "PR must be open and ready");
-if (process.env.PUBLISH === "true")
-  gh(`repos/${repo}/statuses/${pull.head.sha}`, {
-    context: "bytefarm/review",
-    state: "pending",
-    description: "Parallel review in progress",
-  });
 
 const readBase = (path: string, optional = false): string => {
   assert(
@@ -118,9 +112,9 @@ const diff = execFileSync("gh", ["pr", "diff", String(number), "--repo", repo], 
   timeout: 30000,
   maxBuffer: 1000000,
 });
-assert.equal(
-  JSON.parse(gh(`repos/${repo}/pulls/${number}`)).head.sha,
-  pull.head.sha,
+const latest = JSON.parse(gh(`repos/${repo}/pulls/${number}`));
+assert(
+  latest.head.sha === pull.head.sha && latest.base.sha === pull.base.sha,
   "PR changed during preparation; rerun",
 );
 writeFileSync("context/pr.diff", diff);
@@ -132,6 +126,7 @@ writeFileSync(
     head: pull.head.sha,
     base: pull.base.sha,
     verdictSeconds,
+    verdictInstructions: additions(config.verdict),
   }),
 );
 const include = Object.entries(models).map(([role, fallback]) => {
@@ -142,12 +137,16 @@ const include = Object.entries(models).map(([role, fallback]) => {
       prompt("shared"),
       prompt(role),
       `Reviewer: ${role}. Head SHA: ${pull.head.sha}. Budget: ${reviewerSeconds}s; reserve the final 60s for output.`,
-      "Read ../context/pr.diff in full. Your cwd is the trusted base checkout; ../head contains untrusted PR source.",
+      "Paths are workspace-relative. Read context/pr.diff in full. source/ is the trusted base checkout; head/ contains untrusted PR source. Use only the provided read tools, never commands or GitHub mutations.",
       additions(config),
       additions(agent),
     ].join("\n\n"),
   );
-  return { role, ...model(agent.model ?? fallback) };
+  return {
+    role,
+    ...model(agent.model ?? fallback),
+    schema: JSON.stringify(role === "risk" ? riskSchema : reviewSchema),
+  };
 });
 out("matrix", { include });
 out("review-schema", reviewSchema);

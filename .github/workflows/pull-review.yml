@@ -12,6 +12,10 @@ on:
       publish:
         default: false
         type: boolean
+      auto-merge:
+        description: Merge only approved low-risk non-release PRs after CI passes
+        default: false
+        type: boolean
     secrets:
       SYNTHETIC_API_KEY:
         required: true
@@ -29,10 +33,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      id-token: write
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
-      schema: ${{ steps.prepare.outputs.review-schema }}
       base: ${{ steps.prepare.outputs.base }}
       head: ${{ steps.prepare.outputs.head }}
       head-repository: ${{ steps.prepare.outputs.head-repository }}
@@ -49,17 +51,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - if: inputs.publish
-        id: identity
-        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
       - name: Prepare config, prompts, and diff
         id: prepare
         run: node engine/review/prepare.mts
         env:
-          GH_TOKEN: ${{ steps.identity.outputs.token || github.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number }}
           ENGINE_REF: ${{ inputs.engine-ref }}
-          PUBLISH: ${{ inputs.publish }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-input
@@ -72,12 +70,20 @@ jobs:
     timeout-minutes: 12
     permissions:
       contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     name: Review / ${{ matrix.role }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ inputs.engine-ref }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: review-input
@@ -94,31 +100,20 @@ jobs:
           ref: ${{ needs.prepare.outputs.head }}
           path: head
           persist-credentials: false
-      - uses: pullfrog/pullfrog@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
-        id: agent
-        with:
-          prompt_file: context/${{ matrix.role }}.md
-          output_schema: ${{ needs.prepare.outputs.schema }}
-          model: openai-compatible/byok
-          effort: high
-          timeout: ${{ needs.prepare.outputs.seconds }}s
-          push: disabled
-          shell: disabled
-          progress_comments: disabled
-          cwd: source
-        env:
-          OPENAI_COMPATIBLE_BASE_URL: https://api.synthetic.new/openai/v1
-          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
-          OPENAI_COMPATIBLE_MODEL: ${{ matrix.model }}
-          OPENAI_COMPATIBLE_CONTEXT: ${{ matrix.context }}
-          OPENAI_COMPATIBLE_MAX_OUTPUT: ${{ matrix.output }}
-      - name: Save structured result
+      - name: Run isolated read-only specialist
         run: |
           mkdir -p results
-          jq -e . <<< "$RESULT" > "results/$ROLE.json"
+          node engine/review/agent.mts
         env:
+          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          PROMPT_PATH: context/${{ matrix.role }}.md
+          OUTPUT_SCHEMA: ${{ matrix.schema }}
+          MODEL: ${{ matrix.model }}
+          CONTEXT: ${{ matrix.context }}
+          MAX_OUTPUT: ${{ matrix.output }}
+          SECONDS: ${{ needs.prepare.outputs.seconds }}
           ROLE: ${{ matrix.role }}
-          RESULT: ${{ steps.agent.outputs.result }}
+          RESULT_PATH: results/${{ matrix.role }}.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-result-${{ matrix.role }}
@@ -132,7 +127,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -148,6 +142,7 @@ jobs:
           name: review-input
           path: context
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
         with:
           pattern: review-result-*
           path: results
@@ -160,40 +155,65 @@ jobs:
       - name: Summarize using the cheaper model
         if: steps.collect.outputs.complete == 'true'
         id: agent
-        uses: pullfrog/pullfrog@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
-        with:
-          prompt_file: context/verdict.md
-          output_schema: ${{ steps.collect.outputs.schema }}
-          model: openai-compatible/byok
-          effort: low
-          timeout: ${{ needs.prepare.outputs.verdict-seconds }}s
-          push: disabled
-          shell: disabled
-          progress_comments: disabled
-          # Pullfrog probes Git before starting; artifacts alone are not a checkout.
-          cwd: engine
+        run: node engine/review/agent.mts
         env:
-          OPENAI_COMPATIBLE_BASE_URL: https://api.synthetic.new/openai/v1
-          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
-          OPENAI_COMPATIBLE_MODEL: ${{ fromJSON(needs.prepare.outputs.verdict-model).model }}
-          OPENAI_COMPATIBLE_CONTEXT: ${{ fromJSON(needs.prepare.outputs.verdict-model).context }}
-          OPENAI_COMPATIBLE_MAX_OUTPUT: ${{ fromJSON(needs.prepare.outputs.verdict-model).output }}
-      - if: always() && inputs.publish
-        id: identity
-        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
-      - name: Compute verdict and optionally publish
+          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          PROMPT_PATH: context/verdict.md
+          OUTPUT_SCHEMA: ${{ steps.collect.outputs.schema }}
+          MODEL: ${{ fromJSON(needs.prepare.outputs.verdict-model).model }}
+          CONTEXT: ${{ fromJSON(needs.prepare.outputs.verdict-model).context }}
+          MAX_OUTPUT: ${{ fromJSON(needs.prepare.outputs.verdict-model).output }}
+          SECONDS: ${{ needs.prepare.outputs.verdict-seconds }}
+          ROLE: verdict
+          RESULT_PATH: context/synthesis.json
+      - name: Compute verdict without GitHub credentials
         if: always() && steps.collect.outcome == 'success'
-        run: node engine/review/finish.mts publish
+        run: node engine/review/finish.mts render
         env:
-          GH_TOKEN: ${{ steps.identity.outputs.token }}
-          PUBLISH: ${{ inputs.publish }}
           REVIEW_RESULT: ${{ needs.review.result }}
           SYNTHESIS_RESULT: ${{ steps.agent.outcome }}
-          AGENT_RESULT: ${{ steps.agent.outputs.result }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: review-summary
-          path: context/review.md
+          name: review-decision
+          path: |
+            context/review.md
+            context/decision.json
           retention-days: 7
           if-no-files-found: ignore
+
+  publish:
+    if: always() && !cancelled() && inputs.publish && needs.prepare.result == 'success'
+    needs: [prepare, finish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ inputs.engine-ref }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-decision
+          path: context
+      - id: identity
+        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+      - name: Publish and enforce the merge gate
+        run: node engine/review/publish.mts
+        env:
+          GH_TOKEN: ${{ steps.identity.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          AUTO_MERGE: ${{ inputs.auto-merge }}
+          REVIEW_HEAD: ${{ needs.prepare.outputs.head }}
+          REVIEW_BASE: ${{ needs.prepare.outputs.base }}

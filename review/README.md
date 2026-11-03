@@ -1,8 +1,8 @@
 # Parallel PR reviews
 
-A reusable workflow: four Pullfrog specialists run in parallel, a cheaper model summarizes their findings, and code publishes one Approve / Request changes review. Public thebytefarm repos only; no fixes or auto-merge.
+A reusable workflow: five read-only specialists run in parallel, a cheaper model summarizes their findings, and a separate non-agent job publishes one Approve / Request changes review. With explicit opt-in, code merges approved low-risk changes after CI passes. Public thebytefarm repos only; no fixes. Release PRs require a human merge.
 
-Publishing defaults off. Set `publish: true` to submit the final review and commit status; see the [permission limits](#known-safety-limit) before enabling automation.
+Publishing and automatic merging both default off. `publish: true` submits the review/status; additionally setting `auto-merge: true` enables the merge gate. Existing installed callers remain manual-only on the older engine until updated.
 
 ## Agents
 
@@ -12,9 +12,10 @@ Publishing defaults off. Set `publish: true` to submit the final review and comm
 | `security`  | Broken trust boundaries, auth, injection, secrets, data exposure     | `hf:zai-org/GLM-5.3`                      |
 | `standards` | Violations of AGENTS.md and referenced standards, with citations     | `hf:deepseek-ai/DeepSeek-V4.1-Flash-1017` |
 | `design`    | Unnecessary complexity and poor boundaries; advisory only            | `hf:zai-org/GLM-5.3-Flash`                |
+| `risk`      | Change impact and likelihood; low, medium, high, or critical         | `hf:zai-org/GLM-5.3`                      |
 | `verdict`   | Summarize and group findings; never decide approval                  | `hf:openai/gpt-oss-120b`                  |
 
-Each has a [separate prompt](./prompts/). Agents always read applicable AGENTS.md files and referenced standards from the base checkout. There is no custom standards crawler. They inspect source and test code, but do not execute tests or install dependencies.
+Each has a [separate prompt](./prompts/). Agents read applicable AGENTS.md files and referenced standards from the base checkout. They inspect source and test code, but cannot execute commands, install dependencies, or access GitHub tools.
 
 ## Per-repo config
 
@@ -45,37 +46,51 @@ YAML parsing uses the runner's existing `yq`. Synthetic model IDs and token limi
 
 - Specialists run simultaneously, capped at **8 minutes each**; the prompt reserves the final minute for output.
 - Synthesis is capped at **90 seconds**, on the explicitly selected cheaper model. Config may shorten either timeout.
-- Job caps include setup: preparation 5 minutes, specialists 12 minutes, final synthesis/publication 5 minutes. Runner queues and provider limits add wall time. No automatic retries.
+- Job caps include setup: preparation 5 minutes, specialists 12 minutes, synthesis 5 minutes, publication/CI wait 35 minutes. Runner queues and provider limits add wall time. No automatic retries.
 - New invocations for a PR cancel older ones.
-- Pullfrog validates the output schema. The small finishing script checks reviewer/commit identity, completeness, design's advisory-only constraint, standards citations, and preservation of every finding ID.
-- All four complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Original evidence stays in the review body, regardless of the summary.
-- Publication rechecks repository visibility and both PR SHAs. It also writes `bytefarm/review` as pending then success/failure/error. Preparation failure or cancellation can leave it pending; rerun after investigation. Branch protection is not changed.
+- Tool schemas describe model output; code validates report/synthesis shapes, reviewer/commit identity, completeness, design's advisory-only constraint, standards citations, and preservation of every finding ID. Invalid output never approves.
+- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Original evidence stays in the review body, regardless of the summary.
+- Publication rechecks repository visibility and both PR SHAs. It writes `bytefarm/review` as success/failure/error after synthesis. A previous status is not evidence for merging: the gate requires this run's bound decision and current CI. Branch protection is not changed.
 
-## Pullfrog working directories
+## Change risk and merge policy
 
-Pullfrog needs an existing Git checkout as its `cwd`, even for report-only synthesis. Its startup probes `git diff --name-only HEAD` and configures Git before the agent runs. An artifact directory is not sufficient: using `cwd: context` fails with “Not a git repository” before any summarization. Disabling shell and pushes does not skip this setup.
+The risk specialist explains **impact**, **likelihood**, and its rationale without a numeric score. See its [prompt](./prompts/risk.md) for examples of all four levels. Dependency update type informs the assessment but never decides it alone. Missing evidence must not become a low-risk assessment.
 
-The final job uses this workspace layout:
+Approval and merge eligibility are separate: a medium/high/critical change without blocking defects can receive approval but still requires a human merge. Missing or invalid risk output makes the entire review incomplete.
+
+The gate requires a complete approved review, low risk, unchanged base/head, an open non-draft PR, current independent passing CI, and GitHub's clean mergeability state. Pending, failed, cancelled, timed-out, missing, or entirely skipped CI cannot authorize a merge. Optional skipped/neutral checks are allowed alongside an actual success, matching GitHub's check semantics. Queued workflows also block. The current review's own check suite/status cannot count as CI.
+
+Release titles/branches/labels, changelogs, prerelease configuration, release manifests, and package-version changes in package.json/Cargo.toml/pyproject.toml are conservative hard exclusions. Missing manifest patches and renamed/removed manifests also block merging. The risk agent independently flags release preparation even without those markers. These checks intentionally overblock; new release conventions must be added before rollout to a repo that uses them.
+
+`publish.mts` waits up to 30 minutes for CI and branch rules, rechecking the PR and release signals. It merges immediately using the reviewed head SHA, never queues a future unconditional auto-merge, and never requests an admin bypass. A moved base/head requires a fresh review. GitHub's merge endpoint atomically checks the head SHA; the base is rechecked immediately before merging but cannot be atomically pinned through that endpoint. Keep strict up-to-date branch requirements where that race matters.
+
+## Permission boundary
+
+- **Preparation** has read-only GitHub access to obtain pinned base config and the current diff. It cannot mint a Pullfrog installation token.
+- **Specialists and synthesis** use `agent.mts`, a dependency-free tool loop calling the fixed Synthetic chat-completions endpoint. They receive the model credential but no installation token or OIDC permission. No Pullfrog agent runtime is loaded.
+- The only model tools are bounded local `read_file`, `list_files`, `search_text`, and `set_output`. Read tools resolve real paths and deny Git metadata, credentials, and symlink escapes. They cannot execute shell commands, write files, inspect environment variables, call arbitrary URLs, or mutate GitHub.
+- **Publication** is a separate job with no model invocation or model secret. Only it receives OIDC permission and obtains the Pullfrog installation token for review/status publication and merging.
 
 ```text
-engine/                 # Trusted central checkout; synthesis cwd
-context/verdict.md      # Prompt generated by finish.mts collect
-context/reports.json    # Collected specialist reports
-results/<role>.json     # Downloaded specialist outputs
+engine/                 # Pinned trusted runtime; not readable through model tools
+source/                 # Trusted base checkout; specialist read tools
+head/                   # Untrusted PR source; specialist read tools only
+context/pr.diff         # Specialist input; paginated reads
+context/reports.json    # The only synthesis-readable file
+results/<role>.json     # Saved structured specialist outputs
+context/decision.json   # Code-owned result passed to the publication job
 ```
 
-`prompt_file: context/verdict.md` is resolved from `GITHUB_WORKSPACE`, not the agent's `cwd`. The prompt tells the agent to read `../context/reports.json`, relative to `engine/`. Keep those two path bases distinct when changing the workflow. The checkout exists for Pullfrog's startup requirements; synthesis must not inspect its source or instructions.
+Tool paths are workspace-relative, not relative to a Git checkout. Synthesis cannot read source, diff, prompts, or engine code through its tools. Output filenames are selected by trusted workflow code, never model arguments. Model calls have time, turn, and context caps; no silent conversation truncation or automatic retry.
 
-If synthesis fails with a Git-repository error, check the configured `cwd` first. Do not initialize Git in the artifact directory to hide the error; use the existing `engine` checkout. The synthesis regression test runs the real collection CLI, checks the workflow-selected directory with Pullfrog's startup Git probe, and verifies that the generated prompt resolves to the collected reports. It does not run Pullfrog or paid inference; live inference and publication have not been verified.
-
-See [Pullfrog's action-input reference](https://github.com/pullfrog/pullfrog/blob/main/_autodocs/api-reference/main.md) for `cwd` and `prompt_file`. The Git requirement was checked against `main.ts` and `utils/worktree.ts` at action ref `8302038bc7ab13f579cfef4bad72941b87f8c1c5`; recheck runtime behavior when updating Pullfrog.
+The model can still produce incorrect findings or misjudge risk. The tool boundary prevents agent-side writes; it does not make model judgment a formal security proof. Never execute head code in these credentialed workflows.
 
 ## Installation
 
-1. Ensure Pullfrog is installed, BYOK is configured, and the public caller repo has access to an Actions secret named `SYNTHETIC_API_KEY`.
+1. Give the public caller repo access to an Actions secret named `SYNTHETIC_API_KEY`. Pullfrog must be installed for the publication job's installation-token exchange; worker inference calls Synthetic directly and does not use Pullfrog BYOK.
 2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Replace **both** the reusable-workflow ref and `engine-ref` with the same reviewed central commit SHA. The second pin tells checkout where the shared prompts/scripts live—no custom OIDC bootstrap. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
-3. Dispatch the workflow with a PR number. With `publish: false`, our publisher produces artifacts only; with `publish: true`, it submits the review and commit status. The agent-side permissions described below apply in both modes.
-4. For automatic triggers use a trusted `pull_request_target` caller, not `pull_request`. Disable overlapping Pullfrog auto-review and other native write automations. Do not execute PR code in this credentialed workflow.
+3. Dispatch with `publish: false` first and verify actual inference, model routing, report completeness, and artifacts. Then verify publication without automatic merging. Only then enable `auto-merge: true` alongside `publish: true`.
+4. Before automatic triggers, disable overlapping Pullfrog auto-review and existing Dependabot auto-merge rules: they could bypass this risk gate. Clear any previously queued auto-merges, especially release PRs. For automatic triggers use a trusted `pull_request_target` caller, not `pull_request`; handle opened/synchronize/reopened/ready_for_review and pass the event PR number. Do not execute PR code. This change does not enable those triggers automatically.
 
 ### Public repository callers
 
@@ -91,21 +106,24 @@ Each caller is manual-only and pins both central refs to `e1ba85a421032865ae3265
 | `farmall`      | [#2](https://github.com/thebytefarm/farmall/pull/2)        |
 | `marxml`       | [#24](https://github.com/thebytefarm/marxml/pull/24)       |
 
-No private repo callers, branch protection, or live Pullfrog service settings have been changed. Installation requires the Pullfrog app/BYOK setup and a repository-accessible `SYNTHETIC_API_KEY` Actions secret; current org-secret access has not been verified. Before adding automatic triggers, resolve the permission limit below and check for overlapping service-side auto-reviews.
+No private repo callers, branch protection, or live Pullfrog service settings have been changed. The earlier installation PRs do not deploy this risk/merge extension. Repository and accessible organization-secret listings showed no `SYNTHETIC_API_KEY` in these seven repos; activation remains blocked until credentials are supplied and live execution is verified.
 
-## Known safety limit
+## Verification limits
 
-**Pullfrog still exposes GitHub mutation tools to custom-workflow agents even with shell and pushes disabled.** Worker publication is prohibited by prompts, not an enforced tool boundary. `publish: false` disables our publisher, not every possible agent-service side effect. Resolve or verify output-only tool restrictions before enabling arbitrary public contributions. Also audit Pullfrog's service-side hooks and standing instructions; this workflow does not control them.
+Local tests cover tool isolation, symlink/metadata denials, output validation, incomplete reviews, release exclusions, CI gating, and real collection/publication CLI execution with transport fixtures. They do not prove real provider/tool-call compatibility or installation-token exchange. Live inference, publication, merging, and downstream shipping have not been verified. Pullfrog service-side hooks/settings are separate and must be audited before activation.
 
-Specialists run in the trusted base checkout; the head checkout is review data only. Synthesis runs in the central engine checkout and reads only collected reports. Prompts tell agents to ignore head-branch instructions, but this is not a formal prompt-injection boundary. Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance.
+Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance. The runner and API endpoint are pinned by the central engine SHA; the floating Pullfrog worker download is no longer part of inference. The token-exchange action remains separately SHA-pinned.
 
 ## Implementation
 
 - [prepare.mts](./prepare.mts): fetch config/diff, resolve models, assemble prompts and matrix.
-- [finish.mts](./finish.mts): check results, prepare synthesis, compute verdict, optionally publish.
-- [schemas.mts](./schemas.mts): schemas consumed by Pullfrog; no custom validator.
-- [finish.test.mts](./finish.test.mts): approval safeguards and a synthesis directory/report-path regression test.
+- [finish.mts](./finish.mts): check results, prepare synthesis, and render a code-owned decision without write credentials.
+- [agent.mts](./agent.mts): read-only local tools and timeboxed Synthetic inference.
+- [publish.mts](./publish.mts): isolated review/status writer and head-matched merge executor.
+- [merge-policy.mts](./merge-policy.mts): risk/release safeguards and CI decisions.
+- [schemas.mts](./schemas.mts): tool schemas and explicit output-shape assertions; no generic schema engine.
+- Co-located tests cover approval, isolation, CI/release gating, and transport fixtures.
 
-Run `node --test review/*.test.mts` and `actionlint .github/workflows/pull-review.yml review/caller.example.yml`; also run strict `tsgo`, `oxlint`, and `oxfmt` checks. Runtime uses Node 24 plus the hosted Ubuntu runner's `gh`, `jq`, and `yq`; no package installs.
+Run `node --test review/*.test.mts` and `actionlint .github/workflows/pull-review.yml review/caller.example.yml`; also run strict `tsgo`, `oxlint`, and `oxfmt` checks. Runtime uses Node 24 plus the hosted Ubuntu runner's `gh`, `git`, and `yq`; no package installs.
 
-References: [Pullfrog custom workflows](https://docs.pullfrog.com/headless-action), [custom endpoints](https://docs.pullfrog.com/openai-compatible), [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+References: [Synthetic chat completions](https://dev.synthetic.new/docs/openai/chat-completions), [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
