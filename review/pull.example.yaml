@@ -1,0 +1,30 @@
+version: 1
+
+instructions: |
+  Prefer actionable, evidence-backed findings. Do not demand unrelated cleanup.
+instructions-path: ""
+
+reviewers:
+  bugs:
+    model: hf:zai-org/GLM-5.3
+    instructions: ""
+    instructions-path: ""
+  security:
+    model: hf:zai-org/GLM-5.3
+    instructions: ""
+    instructions-path: ""
+  standards:
+    model: hf:deepseek-ai/DeepSeek-V4.1-Flash-1017
+    instructions: ""
+    instructions-path: ""
+  design:
+    model: hf:zai-org/GLM-5.3-Flash
+    instructions: ""
+    instructions-path: ""
+
+verdict:
+  model: hf:openai/gpt-oss-120b
+
+limits:
+  reviewer-timeout: 8m
+  verdict-timeout: 90s
