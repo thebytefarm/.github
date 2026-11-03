@@ -1,6 +1,6 @@
 # Copy to .github/workflows/pull-review.yml in a PUBLIC repo after central review.
 # Replace the ref with the reviewed central commit SHA. This template is not active.
-name: Pull review pilot
+name: Pull review
 
 on:
   workflow_dispatch:

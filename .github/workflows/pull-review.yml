@@ -170,7 +170,8 @@ jobs:
           push: disabled
           shell: disabled
           progress_comments: disabled
-          cwd: context
+          # Pullfrog probes Git before starting; artifacts alone are not a checkout.
+          cwd: engine
         env:
           OPENAI_COMPATIBLE_BASE_URL: https://api.synthetic.new/openai/v1
           OPENAI_COMPATIBLE_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}

@@ -77,7 +77,7 @@ const main = (): void => {
     const prompt = readFileSync(new URL("./prompts/verdict.md", import.meta.url), "utf8");
     writeFileSync(
       "context/verdict.md",
-      `${prompt}\nHead SHA: ${input.head}. Read reports.json. Budget: ${input.verdictSeconds}s; reserve 20s for output.`,
+      `${prompt}\nHead SHA: ${input.head}. Your cwd is the engine checkout; read only the supplied reports, not checkout source or instructions. Read ../context/reports.json. Budget: ${input.verdictSeconds}s; reserve 20s for output.`,
     );
     appendFileSync(
       process.env.GITHUB_OUTPUT!,
