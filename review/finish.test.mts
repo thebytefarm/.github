@@ -150,7 +150,7 @@ it("restricts synthesis to the collected reports without a GitHub identity", (te
   assert.match(readFileSync(output, "utf8"), /^complete=true$/m);
   const workflow = readFileSync(join(root, ".github/workflows/pull-review.yml"), "utf8");
   const synthesisStep = workflow
-    .split("- name: Summarize using the cheaper model")[1]
+    .split("- name: Summarize with lower-effort Codex")[1]
     .split("- name: Compute verdict")[0];
   assert.match(synthesisStep, /node engine\/review\/agent.mts/);
   assert.doesNotMatch(synthesisStep, /GH_TOKEN|id-token|pullfrog\/pullfrog/);

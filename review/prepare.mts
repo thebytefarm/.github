@@ -11,11 +11,11 @@ type Config = Additions & {
   limits?: Record<string, string>;
 };
 const models = {
-  bugs: "hf:zai-org/GLM-5.3",
-  security: "hf:zai-org/GLM-5.3",
-  standards: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  design: "hf:zai-org/GLM-5.3-Flash",
-  risk: "hf:zai-org/GLM-5.3",
+  bugs: "",
+  security: "",
+  standards: "",
+  design: "",
+  risk: "",
 };
 const repo = process.env.GITHUB_REPOSITORY!;
 const number = Number(process.env.PR_NUMBER);
@@ -94,17 +94,12 @@ const additions = (item: Additions = {}): string => {
 };
 const reviewerSeconds = budget(config.limits?.["reviewer-timeout"] ?? "8m", 480);
 const verdictSeconds = budget(config.limits?.["verdict-timeout"] ?? "90s", 90);
-const response = await fetch("https://api.synthetic.new/openai/v1/models", {
-  signal: AbortSignal.timeout(30000),
-});
-assert(response.ok, "Cannot read Synthetic model catalog");
-const catalog = (await response.json()) as {
-  data: { id: string; context_length: number; max_output_length: number }[];
-};
 const model = (id: string) => {
-  const found = catalog.data.find((entry) => entry.id === id);
-  assert(found, `Unknown Synthetic model: ${id}`);
-  return { model: id, context: found.context_length, output: found.max_output_length };
+  assert(
+    typeof id === "string" && /^[\w.-]*$/.test(id),
+    "Use a Codex model name or omit it for the Codex default",
+  );
+  return id;
 };
 mkdirSync("context", { recursive: true });
 const diff = execFileSync("gh", ["pr", "diff", String(number), "--repo", repo], {
@@ -137,20 +132,20 @@ const include = Object.entries(models).map(([role, fallback]) => {
       prompt("shared"),
       prompt(role),
       `Reviewer: ${role}. Head SHA: ${pull.head.sha}. Budget: ${reviewerSeconds}s; reserve the final 60s for output.`,
-      "Paths are workspace-relative. Read context/pr.diff in full. source/ is the trusted base checkout; head/ contains untrusted PR source. Use only the provided read tools, never commands or GitHub mutations.",
+      "Resolve paths against the supplied workspace. Read context/pr.diff in full. source/ is the trusted base checkout; head/ contains untrusted PR source. Only read/search source; never execute repository code, install dependencies, or mutate GitHub. Return the JSON report as your final response matching the supplied output schema.",
       additions(config),
       additions(agent),
     ].join("\n\n"),
   );
   return {
     role,
-    ...model(agent.model ?? fallback),
+    model: model(agent.model ?? fallback),
     schema: JSON.stringify(role === "risk" ? riskSchema : reviewSchema),
   };
 });
 out("matrix", { include });
 out("review-schema", reviewSchema);
-out("verdict-model", model(config.verdict?.model ?? "hf:openai/gpt-oss-120b"));
+out("verdict-model", model(config.verdict?.model ?? ""));
 out("reviewer-seconds", reviewerSeconds);
 out("verdict-seconds", verdictSeconds);
 out("base", pull.base.sha);

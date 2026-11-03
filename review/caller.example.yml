@@ -35,4 +35,4 @@ jobs:
       publish: ${{ inputs.publish }}
       auto-merge: ${{ inputs.auto-merge }}
     secrets:
-      SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}

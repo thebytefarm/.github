@@ -48,7 +48,7 @@ export function decide(reports: Report[], sha: string): "APPROVE" | "REQUEST_CHA
   return findings.some((finding) => finding.blocking) ? "REQUEST_CHANGES" : "APPROVE";
 }
 
-/** Prevents the cheaper model from omitting, duplicating, or inventing findings. */
+/** Prevents synthesis from omitting, duplicating, or inventing findings. */
 export function checkGroups(expected: string[], actual: string[]): void {
   assert.deepEqual([...actual].sort(), [...expected].sort(), "Synthesis lost or invented findings");
 }

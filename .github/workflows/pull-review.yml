@@ -17,7 +17,7 @@ on:
         default: false
         type: boolean
     secrets:
-      SYNTHETIC_API_KEY:
+      CODEX_AUTH_JSON:
         required: true
 
 permissions: {}
@@ -100,17 +100,25 @@ jobs:
           ref: ${{ needs.prepare.outputs.head }}
           path: head
           persist-credentials: false
+      - name: Install pinned native Codex
+        run: npm install --global @openai/codex@0.166.0
+      - name: Enable the managed Linux sandbox
+        run: |
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Run isolated read-only specialist
         run: |
           mkdir -p results
           node engine/review/agent.mts
         env:
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           PROMPT_PATH: context/${{ matrix.role }}.md
           OUTPUT_SCHEMA: ${{ matrix.schema }}
           MODEL: ${{ matrix.model }}
-          CONTEXT: ${{ matrix.context }}
-          MAX_OUTPUT: ${{ matrix.output }}
           SECONDS: ${{ needs.prepare.outputs.seconds }}
           ROLE: ${{ matrix.role }}
           RESULT_PATH: results/${{ matrix.role }}.json
@@ -152,17 +160,27 @@ jobs:
         run: node engine/review/finish.mts collect
         env:
           REVIEW_RESULT: ${{ needs.review.result }}
-      - name: Summarize using the cheaper model
+      - name: Install pinned native Codex
+        if: steps.collect.outputs.complete == 'true'
+        run: npm install --global @openai/codex@0.166.0
+      - name: Enable the managed Linux sandbox
+        if: steps.collect.outputs.complete == 'true'
+        run: |
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Summarize with lower-effort Codex
         if: steps.collect.outputs.complete == 'true'
         id: agent
         run: node engine/review/agent.mts
         env:
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           PROMPT_PATH: context/verdict.md
           OUTPUT_SCHEMA: ${{ steps.collect.outputs.schema }}
-          MODEL: ${{ fromJSON(needs.prepare.outputs.verdict-model).model }}
-          CONTEXT: ${{ fromJSON(needs.prepare.outputs.verdict-model).context }}
-          MAX_OUTPUT: ${{ fromJSON(needs.prepare.outputs.verdict-model).output }}
+          MODEL: ${{ needs.prepare.outputs.verdict-model }}
           SECONDS: ${{ needs.prepare.outputs.verdict-seconds }}
           ROLE: verdict
           RESULT_PATH: context/synthesis.json
