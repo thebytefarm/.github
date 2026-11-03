@@ -73,11 +73,25 @@ See [Pullfrog's action-input reference](https://github.com/pullfrog/pullfrog/blo
 ## Installation
 
 1. Ensure Pullfrog is installed, BYOK is configured, and the public caller repo has access to an Actions secret named `SYNTHETIC_API_KEY`.
-2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pull-review.yml`. Replace **both** the reusable-workflow ref and `engine-ref` with the same reviewed central commit SHA. The second pin tells checkout where the shared prompts/scripts live—no custom OIDC bootstrap.
+2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Replace **both** the reusable-workflow ref and `engine-ref` with the same reviewed central commit SHA. The second pin tells checkout where the shared prompts/scripts live—no custom OIDC bootstrap. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
 3. Dispatch the workflow with a PR number. With `publish: false`, our publisher produces artifacts only; with `publish: true`, it submits the review and commit status. The agent-side permissions described below apply in both modes.
 4. For automatic triggers use a trusted `pull_request_target` caller, not `pull_request`. Disable overlapping Pullfrog auto-review and other native write automations. Do not execute PR code in this credentialed workflow.
 
-Rollout scope: ciderpress, bytefarm.dev, almanac, .github, maltty, farmall, marxml. No private repo callers or live service settings have been changed.
+### Public repository callers
+
+Each caller is manual-only and pins both central refs to `e1ba85a421032865ae326526880a997c78cd4576`. Caller PRs install the entry point; they do not enable automatic PR reviews. The workflow becomes available for manual dispatch after its caller is merged onto the default branch.
+
+| Repository     | Installation PR                                            |
+| -------------- | ---------------------------------------------------------- |
+| `.github`      | [#4](https://github.com/thebytefarm/.github/pull/4)        |
+| `ciderpress`   | [#208](https://github.com/thebytefarm/ciderpress/pull/208) |
+| `bytefarm.dev` | [#4](https://github.com/thebytefarm/bytefarm.dev/pull/4)   |
+| `almanac`      | [#30](https://github.com/thebytefarm/almanac/pull/30)      |
+| `maltty`       | [#221](https://github.com/thebytefarm/maltty/pull/221)     |
+| `farmall`      | [#2](https://github.com/thebytefarm/farmall/pull/2)        |
+| `marxml`       | [#24](https://github.com/thebytefarm/marxml/pull/24)       |
+
+No private repo callers, branch protection, or live Pullfrog service settings have been changed. Installation requires the Pullfrog app/BYOK setup and a repository-accessible `SYNTHETIC_API_KEY` Actions secret; current org-secret access has not been verified. Before adding automatic triggers, resolve the permission limit below and check for overlapping service-side auto-reviews.
 
 ## Known safety limit
 

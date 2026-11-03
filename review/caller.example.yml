@@ -1,4 +1,4 @@
-# Copy to .github/workflows/pull-review.yml in a PUBLIC repo after central review.
+# Copy to .github/workflows/pr-review.yml in a PUBLIC repo after central review.
 # Replace the ref with the reviewed central commit SHA. This template is not active.
 name: Pull review
 
