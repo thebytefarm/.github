@@ -1,0 +1,17 @@
+{
+  "name": "bytefarm-review-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test review/*.test.mts review/evals/*.test.mjs",
+    "eval": "PROMPTFOO_DISABLE_TELEMETRY=1 promptfoo eval --config review/evals/config.mjs --max-concurrency 1 --no-cache --no-share --no-table --no-progress-bar",
+    "eval:view": "PROMPTFOO_DISABLE_TELEMETRY=1 promptfoo view"
+  },
+  "devDependencies": {
+    "promptfoo": "0.125.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.11.2"
+}

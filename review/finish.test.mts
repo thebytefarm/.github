@@ -239,8 +239,18 @@ it("groups duplicate specialist findings into one inline thread without losing e
       head_sha: sha,
       summary: "Two defects",
       groups: [
-        { title: "Lockfile mismatch", finding_ids: ["bugs-1", "risk-1"] },
-        { title: "Missing changeset", finding_ids: ["standards-1"] },
+        {
+          title: "Lockfile mismatch",
+          comment:
+            "The lockfile does not match the dependency pin, so frozen installs fail. Regenerate the lockfile.",
+          finding_ids: ["bugs-1", "risk-1"],
+        },
+        {
+          title: "Missing changeset",
+          comment:
+            "This published-package change needs a changeset under AGENTS.md#Rule. Add one before merging.",
+          finding_ids: ["standards-1"],
+        },
       ],
     }),
   );
@@ -262,10 +272,12 @@ it("groups duplicate specialist findings into one inline thread without losing e
   assert.equal(review.comments[0].path, "src/a.ts");
   assert.equal(review.comments[0].line, 1);
   assert.equal(review.comments[0].side, "RIGHT");
-  assert.match(review.comments[0].body, /bugs evidence/);
-  assert.match(review.comments[0].body, /risk evidence/);
-  assert.match(review.comments[0].body, /bugs-1, risk-1/);
-  assert.match(review.comments[1].body, /Standard: AGENTS.md#Rule/);
+  assert.match(review.comments[0].body, /frozen installs fail/);
+  assert.doesNotMatch(review.comments[0].body, /bugs-1|risk-1|details|###/);
+  assert.match(review.comments[1].body, /AGENTS.md#Rule/);
+  const evidence = readFileSync(join(workspace, "context/review.md"), "utf8");
+  assert.match(evidence, /bugs evidence/);
+  assert.match(evidence, /risk evidence/);
   assert.doesNotMatch(review.body, /bugs evidence|standards evidence/);
-  assert.match(review.body, /REQUEST_CHANGES/);
+  assert.match(review.body, /REQUEST CHANGES/);
 });

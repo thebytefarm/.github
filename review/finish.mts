@@ -100,7 +100,10 @@ const main = (): void => {
         reports.flatMap((report) => report.findings.map((finding) => finding.id)),
         result.groups.flatMap((group: { finding_ids: string[] }) => group.finding_ids),
       );
-      return result as { summary: string; groups: { title: string; finding_ids: string[] }[] };
+      return result as {
+        summary: string;
+        groups: { title: string; comment: string; finding_ids: string[] }[];
+      };
     } catch (error) {
       event = "INCOMPLETE";
       errors.push(String(error));
@@ -109,6 +112,7 @@ const main = (): void => {
         groups: [
           {
             title: "Available findings",
+            comment: "Review incomplete; inspect the evidence artifact before making changes.",
             finding_ids: reports.flatMap((report) => report.findings.map((finding) => finding.id)),
           },
         ],
@@ -142,50 +146,23 @@ const main = (): void => {
   assert(body.length < 60000, "Review too long; refusing to truncate evidence");
   writeFileSync("context/review.md", body);
   const risk = reports.find((report) => report.reviewer === "risk")?.risk;
-  const comments = synthesis.groups.flatMap((group) => {
-    const members = group.finding_ids.map((id) => findings.get(id)!);
-    const anchors = [
-      ...new Set(members.map((finding) => JSON.stringify([finding.path, finding.line]))),
-    ];
-    return anchors.map((anchor) => {
-      const [path, line] = JSON.parse(anchor) as [string, number];
-      const matching = members.filter((finding) => finding.path === path && finding.line === line);
+  const comments = synthesis.groups
+    .filter((group) => group.finding_ids.length > 0)
+    .map((group) => {
+      const finding = findings.get(group.finding_ids[0])!;
       return {
-        path,
-        line,
+        path: finding.path,
+        line: finding.line,
         side: "RIGHT",
-        body: [
-          `### ${text(group.title)}`,
-          text(matching[0].evidence),
-          ...matching
-            .filter((finding) => finding.standard)
-            .map((finding) => `Standard: ${text(finding.standard)}`),
-          ...(matching.length > 1
-            ? [
-                `<details>\n<summary>Corroborating specialist evidence</summary>\n\n${matching
-                  .slice(1)
-                  .map((finding) => `${text(finding.id)}: ${text(finding.evidence)}`)
-                  .join("\n\n")}\n\n</details>`,
-              ]
-            : []),
-          `Findings: ${matching.map((finding) => text(finding.id)).join(", ")} (${matching.some((finding) => finding.blocking) ? "blocking" : "advisory"}).`,
-        ].join("\n\n"),
+        body: text(group.comment),
       };
     });
-  });
   writeFileSync(
     "context/review.json",
     JSON.stringify({
       body: [
-        `## ${event}`,
-        risk
-          ? `Risk: **${text(risk.level)}**. ${text(risk.rationale)}`
-          : "Risk assessment unavailable.",
-        comments.length
-          ? `${comments.length} finding threads attached to the diff.`
-          : text(synthesis.summary),
+        `**${event.replaceAll("_", " ")}** · Risk: **${risk ? text(risk.level) : "unknown"}**.`,
         ...errors.map(text),
-        "Tests were not executed. Design findings are advisory.",
       ].join("\n\n"),
       comments,
     }),
