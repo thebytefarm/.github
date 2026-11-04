@@ -1,22 +1,5 @@
 name: Review scheduling probe
-on:
-  workflow_call:
-    inputs:
-      engine-ref:
-        required: true
-        type: string
-      pr-number:
-        required: true
-        type: number
-      publish:
-        default: false
-        type: boolean
-      auto-merge:
-        default: false
-        type: boolean
-    secrets:
-      CODEX_AUTH_JSON:
-        required: true
+on: workflow_call
 permissions: {}
 jobs:
   probe:
