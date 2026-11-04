@@ -205,6 +205,21 @@ it("withholds write credentials and OIDC from preparation, specialists, and synt
   assert.doesNotMatch(workers, /SYNTHETIC|OPENAI_API_KEY/);
 });
 
+it("gates the review matrix before evaluating missing preparation outputs", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/pull-review.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /github\.event\.repository\.private == false/);
+  assert.doesNotMatch(workflow, /github\.event\.repository\.visibility/);
+  assert.match(workflow, /\n  review:\n    if: needs\.prepare\.result == 'success'\n/);
+  const prepare = readFileSync(new URL("./prepare.mts", import.meta.url), "utf8");
+  assert.match(
+    prepare,
+    /assert\.equal\(JSON\.parse\(gh\(`repos\/\$\{repo\}`\)\)\.visibility, "public"\)/,
+  );
+});
+
 it(
   "enforces read, write, credential, symlink, and network denials in the native Codex sandbox",
   { skip: process.env.CODEX_SANDBOX_TESTS !== "true" },

@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository_owner == 'thebytefarm' && github.event.repository.visibility == 'public'
+    if: github.repository_owner == 'thebytefarm' && github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -65,6 +65,7 @@ jobs:
           retention-days: 7
 
   review:
+    if: needs.prepare.result == 'success'
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 12
