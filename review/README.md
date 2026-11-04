@@ -49,7 +49,24 @@ YAML parsing uses the runner's existing `yq`. All roles use Codex's default mode
 - Job caps include setup: preparation 5 minutes, specialists 12 minutes, synthesis 5 minutes, publication/CI wait 35 minutes. Runner queues and provider limits add wall time. No automatic retries.
 - New invocations for a PR cancel older ones.
 - Tool schemas describe model output; code validates report/synthesis shapes, reviewer/commit identity, completeness, design's advisory-only constraint, standards citations, and preservation of every finding ID. Invalid output never approves.
-- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Original evidence stays in the review body, regardless of the summary.
+- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Findings are inline diff threads, grouped by root cause and location. Comments are 2–3 short sentences, capped at 75 words/600 characters, without headings, specialist IDs, or duplicate evidence. Overlong comments fail validation rather than being truncated. Invalid/out-of-diff anchors fail publication rather than silently falling back to a timeline roll-up.
+
+### Review presentation
+
+The review opens with three SVG badges: **review verdict**, **risk level**, and **auto-merge policy**. These are static Shields.io images with descriptive alt text; only fixed status labels are sent to Shields.io, never repository names, source, findings, or credentials. No dependency or image upload is needed. Text below the badges reports the issue count, specialist completion, and merge restriction even if images fail to load.
+
+Approval means no blocking defects were found—not that a change is low risk or eligible to merge. Elevated risk and detected release preparation show **human only**. A clean low-risk change shows **CI gate pending**, never a claim that CI passed or merging is enabled. The publisher independently rechecks release signals, current head/base, CI, and merge policy before merging.
+
+Impact, likelihood, and rationale appear once in a collapsed **Why this risk level?** section, without a second model-written summary repeating them. Actions summaries use the same compact layout; full original evidence remains in a separate collapsed section in the artifact and Actions summary. Inline issue comments stay short and badge-free.
+
+### Live progress
+
+With publication enabled, an independent progress job posts a sticky timeline comment before checking out code or installing anything. It uses `marocchino/sticky-pull-request-comment` **v3.0.5**, pinned to full commit `5770ad5eb8f42dd2c4f34da00c94c5381e49af88`. The same comment is updated rather than recreated, including on subsequent runs.
+
+The dashboard tracks preparation, each of the five specialists, synthesis, and publication/merge gating from actual Actions job state. It observes running/completed transitions every 20 seconds; concurrent transitions may be combined into one update. Runner scheduling and the initial read-only validation/token exchange are the only prerequisites to the first comment. The observer never holds up worker jobs and never invokes a model or executes PR code.
+
+Updates stop if the PR moves or a newer run owns the comment. Failed preparation, interrupted progress reporting, and completed publication have explicit terminal states. A completed workflow is not described as approval or a successful merge; the published review and run remain authoritative. Progress is disabled for private repositories and artifact-only runs. Like the existing publisher, it uses Pullfrog's installation identity only for non-agent GitHub writes; its Actions token is read-only and it has no model secret or status-write permission.
+
 - Publication rechecks repository visibility and both PR SHAs. It writes `bytefarm/review` as success/failure/error after synthesis. A previous status is not evidence for merging: the gate requires this run's bound decision and current CI. Branch protection is not changed.
 
 ## Change risk and merge policy
@@ -71,8 +88,8 @@ Release titles/branches/labels, changelogs, prerelease configuration, release ma
 - Each run gets a private temporary `CODEX_HOME` containing only a dedicated ChatGPT login and trusted config. Login files are mode 0600 and removed after the run; no local user login is loaded automatically. API-key fallback is rejected.
 - A named Codex permission profile grants minimal system-runtime reads, the exact native Codex executable needed for Linux sandbox re-execution, and the explicit review inputs. It does not grant access to the executable's parent installation directory. It denies tool filesystem writes, network access, authentication home, Git metadata, `/proc`, and service sockets. Synthesis gets only the collected reports. Nested symlink targets must still satisfy the sandbox policy.
 - Codex runs outside either checkout with automatic project-document loading disabled; prompts explicitly direct it to base-branch standards. No untrusted head config, rules, hooks, or home MCP configuration is loaded. The generated home has no MCP servers or plugins.
-- The supervisor starts Codex as the runner UID with cleared supplementary groups/capabilities and `no_new_privs`. Its environment contains only PATH, HOME, CODEX_HOME, and LANG; model tools inherit no environment. No GitHub tokens, OIDC variables, provider API keys, or raw login JSON are forwarded. GNU timeout kills the Codex process group at the configured deadline. Failure never falls back to an unsandboxed mode.
-- **Publication** is a separate job with no model invocation or model secret. Only it receives OIDC permission and obtains the Pullfrog installation token for review/status publication and merging.
+- The supervisor starts Codex as the runner UID with cleared supplementary groups/capabilities and `no_new_privs`. Its environment contains only PATH, HOME, CODEX_HOME, and LANG; model tools inherit no runner environment and receive only a fixed system PATH. No GitHub tokens, OIDC variables, provider API keys, or raw login JSON are forwarded. GNU timeout kills the Codex process group at the configured deadline. Failure never falls back to an unsandboxed mode.
+- **Publication and progress** are separate non-agent jobs with no model invocation or model secret. They receive OIDC permission and obtain a Pullfrog installation token: the publisher submits reviews/merges, while progress updates only the sticky comment through the pinned action. Commit statuses use the publisher's separate Actions token with `statuses: write`; preparation, specialists, synthesis, and progress receive no status-write permission. Reusable callers must allow that permission ceiling.
 
 ```text
 engine/                 # Pinned trusted supervisor; not granted to Codex tools
@@ -91,7 +108,10 @@ The model can still produce incorrect findings or misjudge risk. The tool bounda
 ## Installation
 
 1. With explicit owner approval, create a **dedicated CI Codex login** using `codex login --device-auth` under a new, isolated `CODEX_HOME`. Complete ChatGPT sign-in, then securely store that home's native `auth.json` as the repository-accessible Actions secret **`CODEX_AUTH_JSON`**. Do not paste credentials into chat, copy your everyday local login, print tokens, or upload the auth directory as an artifact. No API key is required. Pullfrog remains installed only for the publisher's installation-token exchange.
-2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Replace **both** the reusable-workflow ref and `engine-ref` with the same reviewed central commit SHA. The second pin tells checkout where the shared prompts/scripts live—no custom OIDC bootstrap. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
+2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Call the central reusable workflow at **`@main`**; no tag or caller-side engine SHA is needed. Preparation reads the executing workflow's immutable SHA from GitHub's run metadata, and all jobs check out that same commit. Updates merged into central `main` apply to future runs everywhere without per-repo upgrade PRs. This intentionally trusts central `main` as executable workflow code. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
+
+   Keep the caller's explicit `fromJSON(github.event.inputs.pr-number)` conversion: manual dispatch can deliver numeric inputs as strings, and the reusable workflow requires a number. Without conversion, GitHub may fail the call before creating any jobs or logs.
+
 3. Dispatch with `publish: false` first and verify actual inference, model routing, report completeness, and artifacts. Then verify publication without automatic merging. Only then enable `auto-merge: true` alongside `publish: true`.
 4. Before automatic triggers, disable overlapping Pullfrog auto-review and existing Dependabot auto-merge rules: they could bypass this risk gate. Clear any previously queued auto-merges, especially release PRs. For automatic triggers use a trusted `pull_request_target` caller, not `pull_request`; handle opened/synchronize/reopened/ready_for_review and pass the event PR number. Do not execute PR code. This change does not enable those triggers automatically.
 
@@ -99,7 +119,7 @@ Hosted GitHub runners do not inherit your workstation's ChatGPT login. The subsc
 
 ### Public repository callers
 
-The earlier installation PRs below added manual-only callers pinned to `e1ba85a421032865ae326526880a997c78cd4576`. They did not enable automatic PR reviews. All callers, including this repo's own manual caller, must update both engine pins and their secret mapping before dispatching the Codex engine. No automatic review or merge triggers are added.
+The earlier installation PRs below added manual-only callers on the old engine. A one-time migration changes their secret mapping, permission ceiling, dispatch conversion, and workflow reference to `@main`. Subsequent central engine fixes need no caller PRs. No automatic review or merge triggers are added here.
 
 | Repository     | Installation PR                                            |
 | -------------- | ---------------------------------------------------------- |
@@ -111,13 +131,13 @@ The earlier installation PRs below added manual-only callers pinned to `e1ba85a4
 | `farmall`      | [#2](https://github.com/thebytefarm/farmall/pull/2)        |
 | `marxml`       | [#24](https://github.com/thebytefarm/marxml/pull/24)       |
 
-No private repo callers, secrets, branch protection, or live Pullfrog service settings have been changed. The earlier installation PRs do not deploy this risk/merge extension. Activation remains blocked until the dedicated Codex subscription login is provisioned and live execution is verified. Older external callers still need their secret mapping and both engine pins updated.
+Dedicated repository-scoped `CODEX_AUTH_JSON` secrets are provisioned in all seven public repos. Native Pullfrog auto-merge was disabled everywhere; ciderpress's overlapping native reviews and old Dependabot auto-merge workflow are now disabled, and marxml's queued installation auto-merge was cleared. No private repos or branch protection were changed. Caller migrations remain staged and manual-only; complete live review, synthesis, and review/status publication are verified. Inline publication and main-tracking execution still require live verification.
 
 ## Verification limits
 
-Local tests cover subscription-only authentication, clean process environments, profile construction, CLI failure/cleanup, output validation, incomplete reviews, releases, CI gating, and collection/publication CLIs with transport fixtures. Native sandbox probes verify permitted reads and denied writes, credentials, symlink escapes, network, and synthesis source access without any login or inference. CI runs these probes with the pinned CLI on hosted Linux. Live subscription inference, refresh behavior, publication, merging, and downstream shipping remain unverified. Pullfrog service-side hooks/settings are separate and must be audited before activation.
+Local tests cover subscription-only authentication, clean process environments, profile construction, CLI failure/cleanup, output validation, incomplete reviews, releases, CI gating, and collection/publication CLIs with transport fixtures. Native sandbox probes verify permitted reads and denied writes, credentials, symlink escapes, network, and synthesis source access without any login or inference. CI runs these probes with the pinned CLI on hosted Linux. [Live artifact-only verification](https://github.com/thebytefarm/almanac/actions/runs/41769949098) completed all five specialist reviews and lower-effort synthesis against almanac #31: Request changes, medium risk, with every finding preserved. [Publication verification](https://github.com/thebytefarm/almanac/actions/runs/41776103333) published the review and failing status successfully with auto-merge disabled. Inline publication, main-tracking execution, OAuth refresh behavior, merging, and downstream shipping remain unverified.
 
-Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance. Codex is version-pinned, and supervisor/config code is pinned by the central engine SHA. The token-exchange action remains separately SHA-pinned. Sandbox setup enables unprivileged user namespaces on disposable Ubuntu runners, matching Codex's hosted-Linux requirements; it must not be copied unchanged to shared self-hosted runners.
+Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance. Codex is version-pinned, and supervisor/config code uses the executing workflow SHA resolved once per run, even though callers track `main`. The token-exchange action remains separately SHA-pinned. Sandbox setup enables unprivileged user namespaces on disposable Ubuntu runners, matching Codex's hosted-Linux requirements; it must not be copied unchanged to shared self-hosted runners.
 
 ## Implementation
 
@@ -129,6 +149,8 @@ Artifacts contain public source/policy and last seven days. No secrets are commi
 - [schemas.mts](./schemas.mts): tool schemas and explicit output-shape assertions; no generic schema engine.
 - Co-located tests cover approval, isolation, CI/release gating, and transport fixtures.
 
-Run `node --test review/*.test.mts` and `actionlint .github/workflows/pull-review.yml review/caller.example.yml`; also run strict `tsgo`, `oxlint`, and `oxfmt`. With Codex installed, `CODEX_SANDBOX_TESTS=true node --test review/agent.test.mts` runs native probes without logging in or consuming inference. Runtime uses Node 24, pinned native Codex, and hosted Ubuntu's `sudo`, `setpriv`, `timeout`, `gh`, and `yq`. No application dependencies are installed or executed.
+Run `pnpm test` and `actionlint .github/workflows/pull-review.yml review/caller.example.yml`; also run strict `tsgo`, `oxlint`, and `oxfmt`. With Codex installed, `CODEX_SANDBOX_TESTS=true node --test review/agent.test.mts` runs native probes without logging in or consuming inference. Runtime uses Node 24, pinned native Codex, and hosted Ubuntu's `sudo`, `setpriv`, `timeout`, `gh`, and `yq`. No application dependencies are installed or executed by the production review workflow.
+
+For local prompt regression testing, see [review evals](./evals/README.md). `pnpm eval` runs Promptfoo through native Codex using an existing ChatGPT login; `pnpm eval --repeat 3` samples variability. There is no API-key requirement or automatic inference in CI.
 
 References: [Codex CLI](https://github.com/openai/codex), [Codex permissions](https://developers.openai.com/codex/permissions), [GitHub reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).

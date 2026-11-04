@@ -3,8 +3,8 @@ on:
   workflow_call:
     inputs:
       engine-ref:
-        description: Same reviewed central commit SHA as the caller's uses ref
-        required: true
+        description: Legacy caller SHA; omit when tracking main
+        default: ""
         type: string
       pr-number:
         required: true
@@ -27,13 +27,15 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository_owner == 'thebytefarm' && github.event.repository.visibility == 'public'
+    if: github.repository_owner == 'thebytefarm' && github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
       pull-requests: read
     outputs:
+      engine-sha: ${{ steps.engine.outputs.sha }}
       matrix: ${{ steps.prepare.outputs.matrix }}
       base: ${{ steps.prepare.outputs.base }}
       head: ${{ steps.prepare.outputs.head }}
@@ -42,29 +44,41 @@ jobs:
       verdict-seconds: ${{ steps.prepare.outputs.verdict-seconds }}
       verdict-model: ${{ steps.prepare.outputs.verdict-model }}
     steps:
+      - name: Resolve executing reusable workflow commit
+        id: engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_ENGINE_REF: ${{ inputs.engine-ref }}
+        run: |
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '[.referenced_workflows[] | select(.path | startswith("thebytefarm/.github/.github/workflows/pull-review.yml@"))] | if length == 1 then .[0].sha else error("Expected exactly one central engine") end')
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$LEGACY_ENGINE_REF" || "$LEGACY_ENGINE_REF" == "$sha" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ steps.engine.outputs.sha }}
           path: engine
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
+          package-manager-cache: false
       - name: Prepare config, prompts, and diff
         id: prepare
         run: node engine/review/prepare.mts
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number }}
-          ENGINE_REF: ${{ inputs.engine-ref }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          ENGINE_REF: ${{ steps.engine.outputs.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: review-input
           path: context/
           retention-days: 7
 
   review:
+    if: needs.prepare.result == 'success'
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -78,13 +92,14 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: review-input
           path: context
@@ -122,7 +137,7 @@ jobs:
           SECONDS: ${{ needs.prepare.outputs.seconds }}
           ROLE: ${{ matrix.role }}
           RESULT_PATH: results/${{ matrix.role }}.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: review-result-${{ matrix.role }}
           path: results/${{ matrix.role }}.json
@@ -139,17 +154,18 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: review-input
           path: context
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           pattern: review-result-*
@@ -190,12 +206,13 @@ jobs:
         env:
           REVIEW_RESULT: ${{ needs.review.result }}
           SYNTHESIS_RESULT: ${{ steps.agent.outcome }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: review-decision
           path: |
             context/review.md
+            context/review.json
             context/decision.json
           retention-days: 7
           if-no-files-found: ignore
@@ -211,17 +228,19 @@ jobs:
       checks: read
       pull-requests: read
       id-token: write
+      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: review-decision
           path: context
@@ -231,7 +250,143 @@ jobs:
         run: node engine/review/publish.mts
         env:
           GH_TOKEN: ${{ steps.identity.outputs.token }}
+          STATUS_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number }}
           AUTO_MERGE: ${{ inputs.auto-merge }}
           REVIEW_HEAD: ${{ needs.prepare.outputs.head }}
           REVIEW_BASE: ${{ needs.prepare.outputs.base }}
+
+  progress:
+    if: inputs.publish && github.repository_owner == 'thebytefarm' && github.event.repository.private == false
+    name: Review progress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - name: Validate PR and resolve trusted engine
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq 'if .state == "open" and .draft == false then .head.sha else error("PR must be open and ready") end')
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '[.referenced_workflows[] | select(.path | startswith("thebytefarm/.github/.github/workflows/pull-review.yml@"))] | if length == 1 then .[0].sha else error("Expected exactly one central engine") end')
+          [[ "$head" =~ ^[a-f0-9]{40}$ && "$sha" =~ ^[a-f0-9]{40}$ ]]
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - id: identity
+        uses: pullfrog/pullfrog/get-installation-token@8302038bc7ab13f579cfef4bad72941b87f8c1c5 # v0
+      - name: Announce review immediately
+        id: comment
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          GITHUB_TOKEN: ${{ steps.identity.outputs.token }}
+          number_force: ${{ inputs.pr-number }}
+          header: bytefarm-review-progress
+          message: |
+            <!-- bytefarm-review-run:${{ github.run_id }}:${{ github.run_attempt }} -->
+
+            ### Review starting
+
+            Preparing the diff and trusted instructions. Five specialists will review in parallel, followed by synthesis and publication.
+
+            Findings will appear inline. Approval and merging remain gated until review and CI checks finish.
+
+            [Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }})
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: thebytefarm/.github
+          ref: ${{ steps.context.outputs.sha }}
+          path: engine
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      # Eight observed stages can each transition to running and then completed.
+      - name: Refresh progress (1/16)
+        uses: ./engine/review/progress
+        with: &progress-inputs
+          token: ${{ steps.identity.outputs.token }}
+          read-token: ${{ github.token }}
+          number: ${{ inputs.pr-number }}
+          head: ${{ steps.context.outputs.head }}
+          comment-id: ${{ steps.comment.outputs.created_comment_id || steps.comment.outputs.previous_comment_id }}
+      - name: Refresh progress (2/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (3/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (4/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (5/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (6/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (7/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (8/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (9/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (10/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (11/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (12/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (13/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (14/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (15/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Refresh progress (16/16)
+        uses: ./engine/review/progress
+        with: *progress-inputs
+      - name: Check ownership before interrupted-run cleanup
+        if: (failure() || cancelled()) && steps.comment.outcome == 'success'
+        id: interrupted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ steps.comment.outputs.created_comment_id || steps.comment.outputs.previous_comment_id }}
+          MARKER: "<!-- bytefarm-review-run:${{ github.run_id }}:${{ github.run_attempt }} -->"
+        run: |
+          [[ "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]
+          body=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" --jq .body)
+          if [[ "$body" == *"$MARKER"* ]]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mark interrupted progress reporting
+        if: (failure() || cancelled()) && steps.interrupted.outputs.update == 'true'
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          GITHUB_TOKEN: ${{ steps.identity.outputs.token }}
+          number_force: ${{ inputs.pr-number }}
+          header: bytefarm-review-progress
+          message: |
+            <!-- bytefarm-review-run:${{ github.run_id }}:${{ github.run_attempt }} -->
+
+            ### Progress reporting stopped
+
+            This progress job was cancelled or failed. Check the workflow run for the current review state. No approval or merge is implied.
+
+            [Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }})

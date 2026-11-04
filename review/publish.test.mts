@@ -40,6 +40,10 @@ const fixture = () => {
   };
   writeFileSync(join(root, "context/decision.json"), JSON.stringify(decision));
   writeFileSync(join(root, "context/review.md"), "Fixture review");
+  writeFileSync(
+    join(root, "context/review.json"),
+    JSON.stringify({ body: "Fixture review", comments: [] }),
+  );
   const routes: Record<string, unknown> = {
     "repos/thebytefarm/fixture": { visibility: "public" },
     [endpoint]: pull(),
@@ -93,6 +97,8 @@ const fixture = () => {
     const args = process.argv.slice(2), path = args[1];
     const method = args.includes('--method') ? args[args.indexOf('--method') + 1] : 'GET';
     const data = args.includes('--input') ? JSON.parse(fs.readFileSync(0, 'utf8')) : null;
+    const expected = method === 'POST' && path.includes('/statuses/') ? 'fixture-status' : 'fixture';
+    if (process.env.GH_TOKEN !== expected) throw new Error('Wrong credential for request: ' + path);
     fs.appendFileSync('requests.jsonl', JSON.stringify({ path, method, data }) + '\\n');
     if (method !== 'GET') console.log(JSON.stringify({ merged: true }));
     else {
@@ -116,6 +122,7 @@ const fixture = () => {
           ...process.env,
           PATH: `${join(root, "bin")}:${process.env.PATH}`,
           GH_TOKEN: "fixture",
+          STATUS_TOKEN: "fixture-status",
           GITHUB_REPOSITORY: "thebytefarm/fixture",
           GITHUB_RUN_ID: "99",
           PR_NUMBER: "7",
@@ -147,6 +154,56 @@ it("publishes the review but never merges unless explicitly enabled", (test) => 
       .map((request) => request.path),
     [`${endpoint}/reviews`, `repos/thebytefarm/fixture/statuses/${head}`],
   );
+});
+
+it("publishes findings as inline review threads, not a timeline roll-up", (test) => {
+  const transport = fixture();
+  test.after(() => rmSync(transport.root, { recursive: true, force: true }));
+  transport.routes[`${endpoint}/files?per_page=100`] = [
+    [
+      {
+        filename: "src/fix.ts",
+        status: "modified",
+        patch: "@@ -5,2 +5,3 @@\n old\n+fixed\n context",
+      },
+    ],
+  ];
+  const review = {
+    body: "Request changes. Risk: medium.",
+    comments: [
+      {
+        path: "src/fix.ts",
+        line: 6,
+        side: "RIGHT",
+        body: "Fix the concrete defect (bugs-1, risk-1).",
+      },
+    ],
+  };
+  writeFileSync(join(transport.root, "context/review.json"), JSON.stringify(review));
+  const result = transport.run();
+  assert.equal(result.status, 0, result.stderr);
+  const request = transport.requests().find((request) => request.path === `${endpoint}/reviews`)!;
+  assert.deepEqual(request.data, { commit_id: head, event: "APPROVE", ...review });
+});
+
+it("refuses invalid inline anchors before any review, status, or merge write", (test) => {
+  for (const anchor of [
+    { path: "src/fix.ts", line: 99 },
+    { path: "missing.ts", line: 6 },
+  ]) {
+    const transport = fixture();
+    test.after(() => rmSync(transport.root, { recursive: true, force: true }));
+    writeFileSync(
+      join(transport.root, "context/review.json"),
+      JSON.stringify({
+        body: "Request changes",
+        comments: [{ ...anchor, side: "RIGHT", body: "Concrete finding" }],
+      }),
+    );
+    const result = transport.run(true);
+    assert.notEqual(result.status, 0);
+    assert(!transport.requests().some((request) => request.method !== "GET"));
+  }
 });
 
 it("refuses stale or private PRs before making any GitHub writes", (test) => {

@@ -19,10 +19,11 @@ type Run = {
 };
 type Check = Parameters<typeof ciState>[0][number];
 type Status = Parameters<typeof ciState>[1][number];
-const api = <T,>(path: string, method = "GET", data?: unknown): T =>
+const api = <T,>(path: string, method = "GET", data?: unknown, token = process.env.GH_TOKEN): T =>
   JSON.parse(
     execFileSync("gh", ["api", path, "--method", method, ...(data ? ["--input", "-"] : [])], {
       input: data ? JSON.stringify(data) : undefined,
+      env: { ...process.env, GH_TOKEN: token },
       encoding: "utf8",
       timeout: 30000,
       maxBuffer: 10000000,
@@ -72,22 +73,59 @@ const fresh = () => {
   );
   return pull;
 };
-fresh();
+const reviewedPull = fresh();
+assert(process.env.STATUS_TOKEN, "Missing publisher Actions status token");
+const review = JSON.parse(readFileSync("context/review.json", "utf8")) as {
+  body: string;
+  comments: { path: string; line: number; side: string; body: string }[];
+};
+assert(typeof review.body === "string" && review.body.length > 0 && review.body.length < 60000);
+assert(Array.isArray(review.comments) && review.comments.length <= 100, "Too many inline comments");
+if (review.comments.length) {
+  const files = pages<File[]>(`${endpoint}/files?per_page=100`).flat();
+  assert.equal(files.length, reviewedPull.changed_files, "File list truncated; no publication");
+  for (const comment of review.comments) {
+    assert(comment.side === "RIGHT" && Number.isSafeInteger(comment.line) && comment.line > 0);
+    assert(
+      typeof comment.body === "string" && comment.body.length > 0 && comment.body.length < 60000,
+    );
+    const patch = files.find((file) => file.filename === comment.path)?.patch;
+    assert(patch, "Missing comment diff; refusing to invent an anchor");
+    let line = 0;
+    let matched = false;
+    for (const row of patch.split("\n")) {
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+      if (hunk) line = Number(hunk[1]);
+      else if (row.startsWith("+") || row.startsWith(" ")) {
+        if (line === comment.line) matched = true;
+        line += 1;
+      }
+    }
+    assert(matched, `Inline comment outside diff: ${comment.path}:${comment.line}`);
+  }
+  fresh();
+}
 api(`${endpoint}/reviews`, "POST", {
   commit_id: decision.head,
   event: decision.event === "INCOMPLETE" ? "COMMENT" : decision.event,
-  body: readFileSync("context/review.md", "utf8"),
+  body: review.body,
+  comments: review.comments,
 });
-api(`repos/${repository}/statuses/${decision.head}`, "POST", {
-  context: "bytefarm/review",
-  state:
-    decision.event === "APPROVE"
-      ? "success"
-      : decision.event === "INCOMPLETE"
-        ? "error"
-        : "failure",
-  description: decision.event,
-});
+api(
+  `repos/${repository}/statuses/${decision.head}`,
+  "POST",
+  {
+    context: "bytefarm/review",
+    state:
+      decision.event === "APPROVE"
+        ? "success"
+        : decision.event === "INCOMPLETE"
+          ? "error"
+          : "failure",
+    description: decision.event,
+  },
+  process.env.STATUS_TOKEN,
+);
 if (process.env.AUTO_MERGE !== "true") {
   note("Review published. Automatic merging is disabled.");
 } else {

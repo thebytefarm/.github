@@ -198,6 +198,12 @@ it("renders a bound low-risk decision only after complete reviews and synthesis"
   assert.equal(decision.head, sha);
   assert.equal(decision.risk.level, "low");
   assert.equal(decision.risk.release, false);
+  const review = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+  assert.match(review.body, /review: approved/);
+  assert.match(review.body, /risk: low/);
+  assert.match(review.body, /auto-merge: CI gate pending/);
+  assert.match(review.body, /5\/5 specialists complete/);
+  assert.match(review.body, /still requires passing CI/);
   const partial = { ...reports()[0], status: "partial", limitations: ["Missing context"] };
   writeFileSync(join(workspace, "results/bugs.json"), JSON.stringify(partial));
   assert.throws(() =>
@@ -216,4 +222,154 @@ it("renders a bound low-risk decision only after complete reviews and synthesis"
     JSON.parse(readFileSync(join(workspace, "context/decision.json"), "utf8")).event,
     "INCOMPLETE",
   );
+  const incomplete = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+  assert.match(incomplete.body, /review: incomplete/);
+  assert.match(incomplete.body, /auto-merge: blocked/);
+  assert.match(incomplete.body, /4\/5 specialists complete/);
+  assert.doesNotMatch(incomplete.body, /No actionable findings/);
+});
+
+for (const level of ["low", "medium", "high", "critical"] as const) {
+  it(`separates a clean ${level}-risk approval from merge eligibility`, (test) => {
+    const workspace = mkdtempSync(join(tmpdir(), "review-badges-"));
+    test.after(() => rmSync(workspace, { recursive: true, force: true }));
+    mkdirSync(join(workspace, "context"));
+    mkdirSync(join(workspace, "results"));
+    writeFileSync(join(workspace, "context/input.json"), JSON.stringify({ head: sha }));
+    for (const report of reports()) {
+      writeFileSync(
+        join(workspace, `results/${report.reviewer}.json`),
+        JSON.stringify({
+          ...report,
+          ...(report.risk
+            ? {
+                risk: {
+                  ...report.risk,
+                  level,
+                  impact: "Git-index contents could change.",
+                  likelihood: "Bounded uncertainty.",
+                  rationale: "Packaging expands compatibility risk.",
+                },
+              }
+            : {}),
+        }),
+      );
+    }
+    writeFileSync(
+      join(workspace, "context/synthesis.json"),
+      JSON.stringify({
+        head_sha: sha,
+        summary: "Repeated risk explanation should not appear in the review.",
+        groups: [],
+      }),
+    );
+    const run = () =>
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL("./finish.mts", import.meta.url)), "render"],
+        {
+          cwd: workspace,
+          env: {
+            ...process.env,
+            REVIEW_RESULT: "success",
+            SYNTHESIS_RESULT: "success",
+            GITHUB_STEP_SUMMARY: join(workspace, "summary.md"),
+          },
+        },
+      );
+    run();
+    const review = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+    assert.match(review.body, /review: approved/);
+    assert.match(review.body, new RegExp(`risk: ${level}`));
+    assert.match(
+      review.body,
+      level === "low" ? /auto-merge: CI gate pending/ : /auto-merge: human only/,
+    );
+    assert.equal((review.body.match(/https:\/\/img.shields.io\//g) ?? []).length, 3);
+    const visible = review.body.split("<details>")[0];
+    assert.match(visible, /No actionable findings/);
+    assert.doesNotMatch(visible, /Git-index|Bounded uncertainty|Packaging/);
+    assert.match(review.body, /<summary>Why this risk level\?<\/summary>/);
+    assert.equal((review.body.match(/Git-index contents/g) ?? []).length, 1);
+    assert.doesNotMatch(review.body, /Repeated risk explanation/);
+    assert.match(readFileSync(join(workspace, "summary.md"), "utf8"), /^!\[review: approved\]/);
+    assert.match(
+      readFileSync(join(workspace, "context/review.md"), "utf8"),
+      /<summary>Full review evidence<\/summary>/,
+    );
+    const riskReport = JSON.parse(readFileSync(join(workspace, "results/risk.json"), "utf8"));
+    writeFileSync(
+      join(workspace, "results/risk.json"),
+      JSON.stringify({ ...riskReport, risk: { ...riskReport.risk, release: true } }),
+    );
+    run();
+    const release = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+    assert.match(release.body, /auto-merge: human only/);
+    assert.match(release.body, /Human merge required: release preparation detected/);
+    assert.doesNotMatch(release.body, /CI gate pending/);
+  });
+}
+
+it("groups duplicate specialist findings into one inline thread without losing evidence", (test) => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-inline-"));
+  test.after(() => rmSync(workspace, { recursive: true, force: true }));
+  mkdirSync(join(workspace, "context"));
+  mkdirSync(join(workspace, "results"));
+  writeFileSync(join(workspace, "context/input.json"), JSON.stringify({ head: sha }));
+  for (const report of reports()) {
+    const findings = ["bugs", "risk", "standards"].includes(report.reviewer)
+      ? [{ ...finding(report.reviewer), evidence: `${report.reviewer} evidence` }]
+      : [];
+    writeFileSync(
+      join(workspace, `results/${report.reviewer}.json`),
+      JSON.stringify({ ...report, findings }),
+    );
+  }
+  writeFileSync(
+    join(workspace, "context/synthesis.json"),
+    JSON.stringify({
+      head_sha: sha,
+      summary: "Two defects",
+      groups: [
+        {
+          title: "Lockfile mismatch",
+          comment:
+            "The lockfile does not match the dependency pin, so frozen installs fail. Regenerate the lockfile.",
+          finding_ids: ["bugs-1", "risk-1"],
+        },
+        {
+          title: "Missing changeset",
+          comment:
+            "This published-package change needs a changeset under AGENTS.md#Rule. Add one before merging.",
+          finding_ids: ["standards-1"],
+        },
+      ],
+    }),
+  );
+  execFileSync(
+    process.execPath,
+    [fileURLToPath(new URL("./finish.mts", import.meta.url)), "render"],
+    {
+      cwd: workspace,
+      env: {
+        ...process.env,
+        REVIEW_RESULT: "success",
+        SYNTHESIS_RESULT: "success",
+        GITHUB_STEP_SUMMARY: "",
+      },
+    },
+  );
+  const review = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+  assert.equal(review.comments.length, 2);
+  assert.equal(review.comments[0].path, "src/a.ts");
+  assert.equal(review.comments[0].line, 1);
+  assert.equal(review.comments[0].side, "RIGHT");
+  assert.match(review.comments[0].body, /frozen installs fail/);
+  assert.doesNotMatch(review.comments[0].body, /bugs-1|risk-1|details|###/);
+  assert.match(review.comments[1].body, /AGENTS.md#Rule/);
+  const evidence = readFileSync(join(workspace, "context/review.md"), "utf8");
+  assert.match(evidence, /bugs evidence/);
+  assert.match(evidence, /risk evidence/);
+  assert.doesNotMatch(review.body, /bugs evidence|standards evidence/);
+  assert.match(review.body, /review: changes requested/);
 });

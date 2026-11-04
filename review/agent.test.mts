@@ -43,6 +43,7 @@ it("denies tool writes, network, credentials, and Git metadata through a named C
   assert.match(config, /approval_policy = "never"/);
   assert.match(config, /\[permissions.review.network\]\nenabled = false/);
   assert.match(config, /inherit = "none"/);
+  assert.match(config, /set = \{ PATH = "\/usr\/bin:\/bin:\/usr\/sbin:\/sbin" \}/);
   assert.match(config, /private-auth" = "deny"/);
   assert.match(config, /source\/\.git" = "deny"/);
   assert.doesNotMatch(config, /"write"|":root"|workspace_roots/);
@@ -196,13 +197,63 @@ it("withholds write credentials and OIDC from preparation, specialists, and synt
   const workers = workflow.split("\n  publish:")[0];
   assert.doesNotMatch(
     workers,
-    /id-token: write|GH_TOKEN:.*identity|pullfrog\/pullfrog@|get-installation-token/,
+    /id-token: write|statuses: write|STATUS_TOKEN|GH_TOKEN:.*identity|pullfrog\/pullfrog@|get-installation-token/,
   );
   assert.match(workers, /GH_TOKEN: \$\{\{ github.token \}\}/);
   const publisher = workflow.split("\n  publish:")[1];
   assert.match(publisher, /get-installation-token/);
+  assert.match(publisher, /statuses: write/);
+  assert.match(publisher, /STATUS_TOKEN: \$\{\{ github.token \}\}/);
   assert.doesNotMatch(publisher, /agent\.mts|CODEX_AUTH_JSON/);
   assert.doesNotMatch(workers, /SYNTHETIC|OPENAI_API_KEY/);
+});
+
+it("gates the review matrix before evaluating missing preparation outputs", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/pull-review.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /github\.event\.repository\.private == false/);
+  assert.doesNotMatch(workflow, /github\.event\.repository\.visibility/);
+  assert.match(workflow, /\n  review:\n    if: needs\.prepare\.result == 'success'\n/);
+  const prepare = readFileSync(new URL("./prepare.mts", import.meta.url), "utf8");
+  assert.match(
+    prepare,
+    /assert\.equal\(JSON\.parse\(gh\(`repos\/\$\{repo\}`\)\)\.visibility, "public"\)/,
+  );
+});
+
+it("normalizes manual PR-number strings before calling the typed reusable workflow", () => {
+  for (const path of ["../.github/workflows/pr-review.yml", "./caller.example.yml"]) {
+    const caller = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert(caller.includes("pr-number: ${{ fromJSON(github.event.inputs.pr-number) }}"));
+    assert(caller.includes("uses: thebytefarm/.github/.github/workflows/pull-review.yml@main"));
+    assert.doesNotMatch(caller, /engine-ref:/);
+  }
+});
+
+it("pins every job to the executing workflow SHA rather than re-resolving main", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/pull-review.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /referenced_workflows/);
+  assert.match(workflow, /ref: \$\{\{ steps.engine.outputs.sha \}\}/);
+  assert.equal(workflow.match(/ref: \$\{\{ needs.prepare.outputs.engine-sha \}\}/g)?.length, 3);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs.engine-ref \}\}/);
+});
+
+it("uses Node 24-native action releases without implicit package-manager caching", () => {
+  for (const path of ["pull-review.yml", "review-tests.yml"]) {
+    const workflow = readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8");
+    assert.doesNotMatch(
+      workflow,
+      /49933ea5288caeca8642d1e84afbd3f7d6820020|ea165f8d65b6e75b540449e92b4886f43607fa02|d3f86a106a0bac45b974a628896c90dbdf5c8093/,
+    );
+    const setups = workflow.match(/uses: actions\/setup-node@/g)?.length;
+    assert(setups);
+    assert.equal(workflow.match(/package-manager-cache: false/g)?.length, setups);
+  }
 });
 
 it(

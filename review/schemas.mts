@@ -50,7 +50,13 @@ export const riskSchema = {
 export const verdictSchema = object({
   head_sha: text,
   summary: text,
-  groups: array(object({ title: text, finding_ids: array(text) })),
+  groups: array(
+    object({
+      title: text,
+      comment: { type: "string", minLength: 1, maxLength: 600 },
+      finding_ids: array(text),
+    }),
+  ),
 });
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -108,6 +114,18 @@ export function checkVerdict(value: unknown): void {
   for (const value of verdict.groups) {
     const group = record(value);
     string(group.title);
+    string(group.comment);
+    assert(
+      (group.comment as string).length <= 600 &&
+        (group.comment as string).trim().split(/\s+/).length <= 75,
+      "Inline comment too verbose",
+    );
+    assert(
+      !/^(?:#{1,6}\s|[-*]\s)|<details|Findings:|(?:bugs|security|standards|design|risk)-\d+/im.test(
+        group.comment as string,
+      ),
+      "Inline comment contains review machinery",
+    );
     strings(group.finding_ids);
   }
 }
