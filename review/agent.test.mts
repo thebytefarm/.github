@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
-import { permissionConfig, restrictedArgs, subscriptionAuth } from "./agent.mts";
+import { nativeBinary, permissionConfig, restrictedArgs, subscriptionAuth } from "./agent.mts";
 import { checkReport, checkVerdict } from "./schemas.mts";
 
 it("uses only ChatGPT subscription login and rejects API-key fallbacks", () => {
@@ -56,6 +56,29 @@ it("rejects top-level review-data symlinks outside the workspace", (test) => {
   test.after(() => rmSync(root, { recursive: true, force: true }));
   symlinkSync(tmpdir(), join(root, "source"));
   assert.throws(() => permissionConfig(root, join(root, "auth"), false), /escaped/);
+});
+
+it("resolves npm's native executable and grants only that runtime file", (test) => {
+  const root = mkdtempSync(join(tmpdir(), "codex-runtime-"));
+  test.after(() => rmSync(root, { recursive: true, force: true }));
+  const launcher = join(root, "node_modules/@openai/codex/bin/codex.js");
+  const name = `@openai/codex-${process.platform}-${process.arch}`;
+  const target = `${process.arch === "x64" ? "x86_64" : "aarch64"}-${process.platform === "linux" ? "unknown-linux-musl" : "apple-darwin"}`;
+  const packageRoot = join(root, "node_modules", name);
+  const executable = join(packageRoot, "vendor", target, "bin/codex");
+  mkdirSync(join(root, "node_modules/@openai/codex/bin"), { recursive: true });
+  mkdirSync(join(packageRoot, "vendor", target, "bin"), { recursive: true });
+  mkdirSync(join(root, "context"));
+  writeFileSync(launcher, "fixture");
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name }));
+  writeFileSync(executable, "native fixture");
+  writeFileSync(join(root, "context/reports.json"), "[]");
+  const binary = nativeBinary(launcher);
+  assert.equal(binary, nativeBinary(executable));
+  const config = permissionConfig(root, join(root, "auth"), true, binary);
+  assert(config.includes(`${JSON.stringify(binary)} = "read"`));
+  assert(!config.includes(`${JSON.stringify(packageRoot)} = "read"`));
+  assert(!config.includes(`${JSON.stringify(root)} = "read"`));
 });
 
 it("rejects malformed report and synthesis shapes before approval", () => {
@@ -196,7 +219,7 @@ it(
     symlinkSync(join(root, "home/private.txt"), join(root, "source/escape"));
     const home = join(root, "home");
     const env = { PATH: process.env.PATH!, HOME: home, CODEX_HOME: home, LANG: "C.UTF-8" };
-    const binary = execFileSync("which", ["codex"], { encoding: "utf8" }).trim();
+    const binary = nativeBinary(execFileSync("which", ["codex"], { encoding: "utf8" }).trim());
     const command = (args: string[]) => {
       const cliArgs = [
         "sandbox",
@@ -215,7 +238,7 @@ it(
       const cmd = command(args);
       return spawnSync(cmd.file, cmd.args, { env, encoding: "utf8", timeout: 15000 });
     };
-    writeFileSync(join(home, "config.toml"), permissionConfig(root, home, false));
+    writeFileSync(join(home, "config.toml"), permissionConfig(root, home, false, binary));
     const allowed = invoke(["/bin/cat", join(root, "source/read.txt")]);
     assert.equal(allowed.status, 0, allowed.stderr);
     assert.equal(allowed.stdout.trim(), "public-source");
@@ -242,7 +265,7 @@ it(
       `http://127.0.0.1:${address.port}`,
     ]);
     await assert.rejects(promisify(execFile)(network.file, network.args, { env, timeout: 15000 }));
-    writeFileSync(join(home, "config.toml"), permissionConfig(root, home, true));
+    writeFileSync(join(home, "config.toml"), permissionConfig(root, home, true, binary));
     assert.equal(invoke(["/bin/cat", join(root, "context/reports.json")]).status, 0);
     assert.notEqual(invoke(["/bin/cat", join(root, "source/read.txt")]).status, 0);
   },

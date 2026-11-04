@@ -69,7 +69,7 @@ Release titles/branches/labels, changelogs, prerelease configuration, release ma
 - **Preparation** has read-only GitHub access to obtain pinned base config and the current diff. It cannot mint a Pullfrog installation token.
 - **Specialists and synthesis** use `agent.mts` to launch pinned native Codex CLI **0.166.0** (resolved from npm's latest stable version when this change was authored). There is no Pullfrog worker runtime or custom model HTTP loop.
 - Each run gets a private temporary `CODEX_HOME` containing only a dedicated ChatGPT login and trusted config. Login files are mode 0600 and removed after the run; no local user login is loaded automatically. API-key fallback is rejected.
-- A named Codex permission profile grants minimal system-runtime reads plus the explicit review inputs. It denies tool filesystem writes, network access, authentication home, Git metadata, `/proc`, and service sockets. Synthesis gets only the collected reports. Nested symlink targets must still satisfy the sandbox policy.
+- A named Codex permission profile grants minimal system-runtime reads, the exact native Codex executable needed for Linux sandbox re-execution, and the explicit review inputs. It does not grant access to the executable's parent installation directory. It denies tool filesystem writes, network access, authentication home, Git metadata, `/proc`, and service sockets. Synthesis gets only the collected reports. Nested symlink targets must still satisfy the sandbox policy.
 - Codex runs outside either checkout with automatic project-document loading disabled; prompts explicitly direct it to base-branch standards. No untrusted head config, rules, hooks, or home MCP configuration is loaded. The generated home has no MCP servers or plugins.
 - The supervisor starts Codex as the runner UID with cleared supplementary groups/capabilities and `no_new_privs`. Its environment contains only PATH, HOME, CODEX_HOME, and LANG; model tools inherit no environment. No GitHub tokens, OIDC variables, provider API keys, or raw login JSON are forwarded. GNU timeout kills the Codex process group at the configured deadline. Failure never falls back to an unsandboxed mode.
 - **Publication** is a separate job with no model invocation or model secret. Only it receives OIDC permission and obtains the Pullfrog installation token for review/status publication and merging.
@@ -99,7 +99,7 @@ Hosted GitHub runners do not inherit your workstation's ChatGPT login. The subsc
 
 ### Public repository callers
 
-The earlier installation PRs below added manual-only callers pinned to `e1ba85a421032865ae326526880a997c78cd4576`. They did not enable automatic PR reviews. External callers still use that older engine; this draft updates the central repo's own manual caller to the Codex engine. No automatic review or merge triggers are added.
+The earlier installation PRs below added manual-only callers pinned to `e1ba85a421032865ae326526880a997c78cd4576`. They did not enable automatic PR reviews. All callers, including this repo's own manual caller, must update both engine pins and their secret mapping before dispatching the Codex engine. No automatic review or merge triggers are added.
 
 | Repository     | Installation PR                                            |
 | -------------- | ---------------------------------------------------------- |

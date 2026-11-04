@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Accepts only Codex's ChatGPT login format, never an API-key fallback. */
@@ -26,7 +27,12 @@ export function subscriptionAuth(json: string): string {
 }
 
 /** Grants tools read access to review data and minimal system binaries, not the runner or auth home. */
-export function permissionConfig(workspace: string, home: string, synthesis: boolean): string {
+export function permissionConfig(
+  workspace: string,
+  home: string,
+  synthesis: boolean,
+  runtime?: string,
+): string {
   const root = realpathSync(workspace);
   const paths = synthesis ? ["context/reports.json"] : ["source", "head", "context/pr.diff"];
   const allowed = paths.map((path) => {
@@ -47,6 +53,7 @@ export function permissionConfig(workspace: string, home: string, synthesis: boo
     "enabled = false",
     "[permissions.review.filesystem]",
     '":minimal" = "read"',
+    ...(runtime ? [`${JSON.stringify(realpathSync(runtime))} = "read"`] : []),
     ...allowed,
     ...[
       home,
@@ -56,6 +63,22 @@ export function permissionConfig(workspace: string, home: string, synthesis: boo
       ...(!synthesis ? [join(root, "source/.git"), join(root, "head/.git")] : []),
     ].map((path) => `${JSON.stringify(path)} = "deny"`),
   ].join("\n");
+}
+
+/** Resolves npm's launcher to its native executable so the Linux sandbox can re-exec it. */
+export function nativeBinary(entrypoint: string): string {
+  const launcher = realpathSync(entrypoint);
+  if (!launcher.endsWith("/bin/codex.js")) return launcher;
+  assert(
+    ["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch),
+    "Unsupported Codex platform",
+  );
+  const platform = process.platform;
+  const target = `${process.arch === "x64" ? "x86_64" : "aarch64"}-${platform === "linux" ? "unknown-linux-musl" : "apple-darwin"}`;
+  const manifest = createRequire(launcher).resolve(
+    `@openai/codex-${platform}-${process.arch}/package.json`,
+  );
+  return realpathSync(join(dirname(manifest), "vendor", target, "bin/codex"));
 }
 
 /** Applies the same Linux privilege reduction and process-group deadline to Codex and sandbox probes. */
@@ -111,15 +134,15 @@ export function runAgent(options: {
   mkdirSync(home, { mode: 0o700 });
   mkdirSync(cwd, { mode: 0o700 });
   try {
+    const binary = nativeBinary(execFileSync("which", ["codex"], { encoding: "utf8" }).trim());
     writeFileSync(join(home, "auth.json"), auth, { mode: 0o600 });
     writeFileSync(
       join(home, "config.toml"),
-      permissionConfig(options.workspace, home, options.synthesis),
+      permissionConfig(options.workspace, home, options.synthesis, binary),
     );
     const schema = join(directory, "schema.json");
     const output = join(directory, "result.json");
     writeFileSync(schema, JSON.stringify(options.schema));
-    const binary = execFileSync("which", ["codex"], { encoding: "utf8" }).trim();
     const env = { PATH: process.env.PATH!, HOME: home, CODEX_HOME: home, LANG: "C.UTF-8" };
     const args = restrictedArgs(binary, env, options.seconds, [
       "exec",
