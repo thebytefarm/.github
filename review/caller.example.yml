@@ -28,6 +28,7 @@ jobs:
       checks: read
       pull-requests: read
       id-token: write
+      statuses: write
     uses: thebytefarm/.github/.github/workflows/pull-review.yml@REPLACE_WITH_ENGINE_COMMIT_SHA
     with:
       engine-ref: REPLACE_WITH_ENGINE_COMMIT_SHA

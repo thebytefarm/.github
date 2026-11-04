@@ -19,10 +19,11 @@ type Run = {
 };
 type Check = Parameters<typeof ciState>[0][number];
 type Status = Parameters<typeof ciState>[1][number];
-const api = <T,>(path: string, method = "GET", data?: unknown): T =>
+const api = <T,>(path: string, method = "GET", data?: unknown, token = process.env.GH_TOKEN): T =>
   JSON.parse(
     execFileSync("gh", ["api", path, "--method", method, ...(data ? ["--input", "-"] : [])], {
       input: data ? JSON.stringify(data) : undefined,
+      env: { ...process.env, GH_TOKEN: token },
       encoding: "utf8",
       timeout: 30000,
       maxBuffer: 10000000,
@@ -73,21 +74,27 @@ const fresh = () => {
   return pull;
 };
 fresh();
+assert(process.env.STATUS_TOKEN, "Missing publisher Actions status token");
 api(`${endpoint}/reviews`, "POST", {
   commit_id: decision.head,
   event: decision.event === "INCOMPLETE" ? "COMMENT" : decision.event,
   body: readFileSync("context/review.md", "utf8"),
 });
-api(`repos/${repository}/statuses/${decision.head}`, "POST", {
-  context: "bytefarm/review",
-  state:
-    decision.event === "APPROVE"
-      ? "success"
-      : decision.event === "INCOMPLETE"
-        ? "error"
-        : "failure",
-  description: decision.event,
-});
+api(
+  `repos/${repository}/statuses/${decision.head}`,
+  "POST",
+  {
+    context: "bytefarm/review",
+    state:
+      decision.event === "APPROVE"
+        ? "success"
+        : decision.event === "INCOMPLETE"
+          ? "error"
+          : "failure",
+    description: decision.event,
+  },
+  process.env.STATUS_TOKEN,
+);
 if (process.env.AUTO_MERGE !== "true") {
   note("Review published. Automatic merging is disabled.");
 } else {

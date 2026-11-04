@@ -197,11 +197,13 @@ it("withholds write credentials and OIDC from preparation, specialists, and synt
   const workers = workflow.split("\n  publish:")[0];
   assert.doesNotMatch(
     workers,
-    /id-token: write|GH_TOKEN:.*identity|pullfrog\/pullfrog@|get-installation-token/,
+    /id-token: write|statuses: write|STATUS_TOKEN|GH_TOKEN:.*identity|pullfrog\/pullfrog@|get-installation-token/,
   );
   assert.match(workers, /GH_TOKEN: \$\{\{ github.token \}\}/);
   const publisher = workflow.split("\n  publish:")[1];
   assert.match(publisher, /get-installation-token/);
+  assert.match(publisher, /statuses: write/);
+  assert.match(publisher, /STATUS_TOKEN: \$\{\{ github.token \}\}/);
   assert.doesNotMatch(publisher, /agent\.mts|CODEX_AUTH_JSON/);
   assert.doesNotMatch(workers, /SYNTHETIC|OPENAI_API_KEY/);
 });

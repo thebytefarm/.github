@@ -27,6 +27,7 @@ jobs:
       checks: read
       pull-requests: read
       id-token: write
+      statuses: write
     uses: thebytefarm/.github/.github/workflows/pull-review.yml@d0fff5a0ee9d7b1327c27db1d81c1ae2d30a5d61
     with:
       engine-ref: d0fff5a0ee9d7b1327c27db1d81c1ae2d30a5d61

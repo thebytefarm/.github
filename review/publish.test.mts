@@ -93,6 +93,8 @@ const fixture = () => {
     const args = process.argv.slice(2), path = args[1];
     const method = args.includes('--method') ? args[args.indexOf('--method') + 1] : 'GET';
     const data = args.includes('--input') ? JSON.parse(fs.readFileSync(0, 'utf8')) : null;
+    const expected = method === 'POST' && path.includes('/statuses/') ? 'fixture-status' : 'fixture';
+    if (process.env.GH_TOKEN !== expected) throw new Error('Wrong credential for request: ' + path);
     fs.appendFileSync('requests.jsonl', JSON.stringify({ path, method, data }) + '\\n');
     if (method !== 'GET') console.log(JSON.stringify({ merged: true }));
     else {
@@ -116,6 +118,7 @@ const fixture = () => {
           ...process.env,
           PATH: `${join(root, "bin")}:${process.env.PATH}`,
           GH_TOKEN: "fixture",
+          STATUS_TOKEN: "fixture-status",
           GITHUB_REPOSITORY: "thebytefarm/fixture",
           GITHUB_RUN_ID: "99",
           PR_NUMBER: "7",

@@ -212,6 +212,7 @@ jobs:
       checks: read
       pull-requests: read
       id-token: write
+      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -232,6 +233,7 @@ jobs:
         run: node engine/review/publish.mts
         env:
           GH_TOKEN: ${{ steps.identity.outputs.token }}
+          STATUS_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number }}
           AUTO_MERGE: ${{ inputs.auto-merge }}
           REVIEW_HEAD: ${{ needs.prepare.outputs.head }}
