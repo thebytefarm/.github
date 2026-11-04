@@ -49,7 +49,7 @@ YAML parsing uses the runner's existing `yq`. All roles use Codex's default mode
 - Job caps include setup: preparation 5 minutes, specialists 12 minutes, synthesis 5 minutes, publication/CI wait 35 minutes. Runner queues and provider limits add wall time. No automatic retries.
 - New invocations for a PR cancel older ones.
 - Tool schemas describe model output; code validates report/synthesis shapes, reviewer/commit identity, completeness, design's advisory-only constraint, standards citations, and preservation of every finding ID. Invalid output never approves.
-- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Original evidence stays in the review body, regardless of the summary.
+- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Findings are inline diff threads, grouped by root cause and location; corroborating evidence is collapsed in the same thread, not posted twice. The review body contains only the decision and risk. Full original evidence remains in the artifacts. Invalid/out-of-diff anchors fail publication rather than silently falling back to a timeline roll-up.
 - Publication rechecks repository visibility and both PR SHAs. It writes `bytefarm/review` as success/failure/error after synthesis. A previous status is not evidence for merging: the gate requires this run's bound decision and current CI. Branch protection is not changed.
 
 ## Change risk and merge policy
@@ -91,7 +91,7 @@ The model can still produce incorrect findings or misjudge risk. The tool bounda
 ## Installation
 
 1. With explicit owner approval, create a **dedicated CI Codex login** using `codex login --device-auth` under a new, isolated `CODEX_HOME`. Complete ChatGPT sign-in, then securely store that home's native `auth.json` as the repository-accessible Actions secret **`CODEX_AUTH_JSON`**. Do not paste credentials into chat, copy your everyday local login, print tokens, or upload the auth directory as an artifact. No API key is required. Pullfrog remains installed only for the publisher's installation-token exchange.
-2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Replace **both** the reusable-workflow ref and `engine-ref` with the same reviewed central commit SHA. The second pin tells checkout where the shared prompts/scripts live—no custom OIDC bootstrap. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
+2. Copy [caller.example.yml](./caller.example.yml) to the repo's `.github/workflows/pr-review.yml`. Call the central reusable workflow at **`@main`**; no tag or caller-side engine SHA is needed. Preparation reads the executing workflow's immutable SHA from GitHub's run metadata, and all jobs check out that same commit. Updates merged into central `main` apply to future runs everywhere without per-repo upgrade PRs. This intentionally trusts central `main` as executable workflow code. Keep the caller separate from the reusable engine's `pull-review.yml`, including in this repo.
 
    Keep the caller's explicit `fromJSON(github.event.inputs.pr-number)` conversion: manual dispatch can deliver numeric inputs as strings, and the reusable workflow requires a number. Without conversion, GitHub may fail the call before creating any jobs or logs.
 
@@ -102,7 +102,7 @@ Hosted GitHub runners do not inherit your workstation's ChatGPT login. The subsc
 
 ### Public repository callers
 
-The earlier installation PRs below added manual-only callers pinned to `e1ba85a421032865ae326526880a997c78cd4576`. They did not enable automatic PR reviews. All callers, including this repo's own manual caller, must update both engine pins and their secret mapping before dispatching the Codex engine. No automatic review or merge triggers are added.
+The earlier installation PRs below added manual-only callers on the old engine. A one-time migration changes their secret mapping, permission ceiling, dispatch conversion, and workflow reference to `@main`. Subsequent central engine fixes need no caller PRs. No automatic review or merge triggers are added here.
 
 | Repository     | Installation PR                                            |
 | -------------- | ---------------------------------------------------------- |
@@ -114,13 +114,13 @@ The earlier installation PRs below added manual-only callers pinned to `e1ba85a4
 | `farmall`      | [#2](https://github.com/thebytefarm/farmall/pull/2)        |
 | `marxml`       | [#24](https://github.com/thebytefarm/marxml/pull/24)       |
 
-Dedicated repository-scoped `CODEX_AUTH_JSON` secrets are provisioned in all seven public repos. Native Pullfrog auto-merge was disabled everywhere; ciderpress's overlapping native reviews and old Dependabot auto-merge workflow are now disabled, and marxml's queued installation auto-merge was cleared. No private repos or branch protection were changed. Caller migrations remain staged and manual-only; complete live review and synthesis are verified, while publication verification is pending.
+Dedicated repository-scoped `CODEX_AUTH_JSON` secrets are provisioned in all seven public repos. Native Pullfrog auto-merge was disabled everywhere; ciderpress's overlapping native reviews and old Dependabot auto-merge workflow are now disabled, and marxml's queued installation auto-merge was cleared. No private repos or branch protection were changed. Caller migrations remain staged and manual-only; complete live review, synthesis, and review/status publication are verified. Inline publication and main-tracking execution still require live verification.
 
 ## Verification limits
 
-Local tests cover subscription-only authentication, clean process environments, profile construction, CLI failure/cleanup, output validation, incomplete reviews, releases, CI gating, and collection/publication CLIs with transport fixtures. Native sandbox probes verify permitted reads and denied writes, credentials, symlink escapes, network, and synthesis source access without any login or inference. CI runs these probes with the pinned CLI on hosted Linux. [Live artifact-only verification](https://github.com/thebytefarm/almanac/actions/runs/41769949098) completed all five specialist reviews and lower-effort synthesis against almanac #31: Request changes, medium risk, with every finding preserved. It identified a lockfile mismatch and missing changeset; no publication or merge was requested. OAuth refresh behavior, publication, merging, and downstream shipping remain unverified.
+Local tests cover subscription-only authentication, clean process environments, profile construction, CLI failure/cleanup, output validation, incomplete reviews, releases, CI gating, and collection/publication CLIs with transport fixtures. Native sandbox probes verify permitted reads and denied writes, credentials, symlink escapes, network, and synthesis source access without any login or inference. CI runs these probes with the pinned CLI on hosted Linux. [Live artifact-only verification](https://github.com/thebytefarm/almanac/actions/runs/41769949098) completed all five specialist reviews and lower-effort synthesis against almanac #31: Request changes, medium risk, with every finding preserved. [Publication verification](https://github.com/thebytefarm/almanac/actions/runs/41776103333) published the review and failing status successfully with auto-merge disabled. Inline publication, main-tracking execution, OAuth refresh behavior, merging, and downstream shipping remain unverified.
 
-Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance. Codex is version-pinned, and supervisor/config code is pinned by the central engine SHA. The token-exchange action remains separately SHA-pinned. Sandbox setup enables unprivileged user namespaces on disposable Ubuntu runners, matching Codex's hosted-Linux requirements; it must not be copied unchanged to shared self-hosted runners.
+Artifacts contain public source/policy and last seven days. No secrets are committed or passed with blanket inheritance. Codex is version-pinned, and supervisor/config code uses the executing workflow SHA resolved once per run, even though callers track `main`. The token-exchange action remains separately SHA-pinned. Sandbox setup enables unprivileged user namespaces on disposable Ubuntu runners, matching Codex's hosted-Linux requirements; it must not be copied unchanged to shared self-hosted runners.
 
 ## Implementation
 

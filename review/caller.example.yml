@@ -29,9 +29,8 @@ jobs:
       pull-requests: read
       id-token: write
       statuses: write
-    uses: thebytefarm/.github/.github/workflows/pull-review.yml@REPLACE_WITH_ENGINE_COMMIT_SHA
+    uses: thebytefarm/.github/.github/workflows/pull-review.yml@main
     with:
-      engine-ref: REPLACE_WITH_ENGINE_COMMIT_SHA
       pr-number: ${{ fromJSON(github.event.inputs.pr-number) }}
       publish: ${{ inputs.publish }}
       auto-merge: ${{ inputs.auto-merge }}

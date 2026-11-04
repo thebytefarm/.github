@@ -141,13 +141,62 @@ const main = (): void => {
   ].join("\n\n");
   assert(body.length < 60000, "Review too long; refusing to truncate evidence");
   writeFileSync("context/review.md", body);
+  const risk = reports.find((report) => report.reviewer === "risk")?.risk;
+  const comments = synthesis.groups.flatMap((group) => {
+    const members = group.finding_ids.map((id) => findings.get(id)!);
+    const anchors = [
+      ...new Set(members.map((finding) => JSON.stringify([finding.path, finding.line]))),
+    ];
+    return anchors.map((anchor) => {
+      const [path, line] = JSON.parse(anchor) as [string, number];
+      const matching = members.filter((finding) => finding.path === path && finding.line === line);
+      return {
+        path,
+        line,
+        side: "RIGHT",
+        body: [
+          `### ${text(group.title)}`,
+          text(matching[0].evidence),
+          ...matching
+            .filter((finding) => finding.standard)
+            .map((finding) => `Standard: ${text(finding.standard)}`),
+          ...(matching.length > 1
+            ? [
+                `<details>\n<summary>Corroborating specialist evidence</summary>\n\n${matching
+                  .slice(1)
+                  .map((finding) => `${text(finding.id)}: ${text(finding.evidence)}`)
+                  .join("\n\n")}\n\n</details>`,
+              ]
+            : []),
+          `Findings: ${matching.map((finding) => text(finding.id)).join(", ")} (${matching.some((finding) => finding.blocking) ? "blocking" : "advisory"}).`,
+        ].join("\n\n"),
+      };
+    });
+  });
+  writeFileSync(
+    "context/review.json",
+    JSON.stringify({
+      body: [
+        `## ${event}`,
+        risk
+          ? `Risk: **${text(risk.level)}**. ${text(risk.rationale)}`
+          : "Risk assessment unavailable.",
+        comments.length
+          ? `${comments.length} finding threads attached to the diff.`
+          : text(synthesis.summary),
+        ...errors.map(text),
+        "Tests were not executed. Design findings are advisory.",
+      ].join("\n\n"),
+      comments,
+    }),
+  );
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body);
   writeFileSync(
     "context/decision.json",
     JSON.stringify({
       ...input,
       event,
-      risk: reports.find((report) => report.reviewer === "risk")?.risk,
+      risk,
     }),
   );
   assert.notEqual(event, "INCOMPLETE", "Review incomplete; no approval");

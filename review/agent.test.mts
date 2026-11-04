@@ -227,7 +227,20 @@ it("normalizes manual PR-number strings before calling the typed reusable workfl
   for (const path of ["../.github/workflows/pr-review.yml", "./caller.example.yml"]) {
     const caller = readFileSync(new URL(path, import.meta.url), "utf8");
     assert(caller.includes("pr-number: ${{ fromJSON(github.event.inputs.pr-number) }}"));
+    assert(caller.includes("uses: thebytefarm/.github/.github/workflows/pull-review.yml@main"));
+    assert.doesNotMatch(caller, /engine-ref:/);
   }
+});
+
+it("pins every job to the executing workflow SHA rather than re-resolving main", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/pull-review.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /referenced_workflows/);
+  assert.match(workflow, /ref: \$\{\{ steps.engine.outputs.sha \}\}/);
+  assert.equal(workflow.match(/ref: \$\{\{ needs.prepare.outputs.engine-sha \}\}/g)?.length, 3);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs.engine-ref \}\}/);
 });
 
 it(

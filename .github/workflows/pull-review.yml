@@ -3,8 +3,8 @@ on:
   workflow_call:
     inputs:
       engine-ref:
-        description: Same reviewed central commit SHA as the caller's uses ref
-        required: true
+        description: Legacy caller SHA; omit when tracking main
+        default: ""
         type: string
       pr-number:
         required: true
@@ -32,8 +32,10 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
       pull-requests: read
     outputs:
+      engine-sha: ${{ steps.engine.outputs.sha }}
       matrix: ${{ steps.prepare.outputs.matrix }}
       base: ${{ steps.prepare.outputs.base }}
       head: ${{ steps.prepare.outputs.head }}
@@ -42,10 +44,20 @@ jobs:
       verdict-seconds: ${{ steps.prepare.outputs.verdict-seconds }}
       verdict-model: ${{ steps.prepare.outputs.verdict-model }}
     steps:
+      - name: Resolve executing reusable workflow commit
+        id: engine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_ENGINE_REF: ${{ inputs.engine-ref }}
+        run: |
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '[.referenced_workflows[] | select(.path | startswith("thebytefarm/.github/.github/workflows/pull-review.yml@"))] | if length == 1 then .[0].sha else error("Expected exactly one central engine") end')
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$LEGACY_ENGINE_REF" || "$LEGACY_ENGINE_REF" == "$sha" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ steps.engine.outputs.sha }}
           path: engine
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -57,7 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number }}
-          ENGINE_REF: ${{ inputs.engine-ref }}
+          ENGINE_REF: ${{ steps.engine.outputs.sha }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-input
@@ -79,7 +91,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -140,7 +152,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -197,6 +209,7 @@ jobs:
           name: review-decision
           path: |
             context/review.md
+            context/review.json
             context/decision.json
           retention-days: 7
           if-no-files-found: ignore
@@ -217,7 +230,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: thebytefarm/.github
-          ref: ${{ inputs.engine-ref }}
+          ref: ${{ needs.prepare.outputs.engine-sha }}
           path: engine
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

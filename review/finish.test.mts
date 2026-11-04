@@ -217,3 +217,55 @@ it("renders a bound low-risk decision only after complete reviews and synthesis"
     "INCOMPLETE",
   );
 });
+
+it("groups duplicate specialist findings into one inline thread without losing evidence", (test) => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-inline-"));
+  test.after(() => rmSync(workspace, { recursive: true, force: true }));
+  mkdirSync(join(workspace, "context"));
+  mkdirSync(join(workspace, "results"));
+  writeFileSync(join(workspace, "context/input.json"), JSON.stringify({ head: sha }));
+  for (const report of reports()) {
+    const findings = ["bugs", "risk", "standards"].includes(report.reviewer)
+      ? [{ ...finding(report.reviewer), evidence: `${report.reviewer} evidence` }]
+      : [];
+    writeFileSync(
+      join(workspace, `results/${report.reviewer}.json`),
+      JSON.stringify({ ...report, findings }),
+    );
+  }
+  writeFileSync(
+    join(workspace, "context/synthesis.json"),
+    JSON.stringify({
+      head_sha: sha,
+      summary: "Two defects",
+      groups: [
+        { title: "Lockfile mismatch", finding_ids: ["bugs-1", "risk-1"] },
+        { title: "Missing changeset", finding_ids: ["standards-1"] },
+      ],
+    }),
+  );
+  execFileSync(
+    process.execPath,
+    [fileURLToPath(new URL("./finish.mts", import.meta.url)), "render"],
+    {
+      cwd: workspace,
+      env: {
+        ...process.env,
+        REVIEW_RESULT: "success",
+        SYNTHESIS_RESULT: "success",
+        GITHUB_STEP_SUMMARY: "",
+      },
+    },
+  );
+  const review = JSON.parse(readFileSync(join(workspace, "context/review.json"), "utf8"));
+  assert.equal(review.comments.length, 2);
+  assert.equal(review.comments[0].path, "src/a.ts");
+  assert.equal(review.comments[0].line, 1);
+  assert.equal(review.comments[0].side, "RIGHT");
+  assert.match(review.comments[0].body, /bugs evidence/);
+  assert.match(review.comments[0].body, /risk evidence/);
+  assert.match(review.comments[0].body, /bugs-1, risk-1/);
+  assert.match(review.comments[1].body, /Standard: AGENTS.md#Rule/);
+  assert.doesNotMatch(review.body, /bugs evidence|standards evidence/);
+  assert.match(review.body, /REQUEST_CHANGES/);
+});
