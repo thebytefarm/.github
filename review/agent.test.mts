@@ -243,6 +243,19 @@ it("pins every job to the executing workflow SHA rather than re-resolving main",
   assert.doesNotMatch(workflow, /ref: \$\{\{ inputs.engine-ref \}\}/);
 });
 
+it("uses Node 24-native action releases without implicit package-manager caching", () => {
+  for (const path of ["pull-review.yml", "review-tests.yml"]) {
+    const workflow = readFileSync(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8");
+    assert.doesNotMatch(
+      workflow,
+      /49933ea5288caeca8642d1e84afbd3f7d6820020|ea165f8d65b6e75b540449e92b4886f43607fa02|d3f86a106a0bac45b974a628896c90dbdf5c8093/,
+    );
+    const setups = workflow.match(/uses: actions\/setup-node@/g)?.length;
+    assert(setups);
+    assert.equal(workflow.match(/package-manager-cache: false/g)?.length, setups);
+  }
+});
+
 it(
   "enforces read, write, credential, symlink, and network denials in the native Codex sandbox",
   { skip: process.env.CODEX_SANDBOX_TESTS !== "true" },
