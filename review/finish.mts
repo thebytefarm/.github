@@ -122,7 +122,7 @@ const main = (): void => {
   const findings = new Map(
     reports.flatMap((report) => report.findings.map((finding) => [finding.id, finding] as const)),
   );
-  const body = [
+  const evidence = [
     `## ${event}`,
     ...reports
       .filter((report) => report.reviewer === "risk" && report.risk)
@@ -143,9 +143,48 @@ const main = (): void => {
     ),
     "Tests were not executed. Design findings are advisory.",
   ].join("\n\n");
-  assert(body.length < 60000, "Review too long; refusing to truncate evidence");
-  writeFileSync("context/review.md", body);
-  const risk = reports.find((report) => report.reviewer === "risk")?.risk;
+  const risk = reports.find(
+    (report) =>
+      report.reviewer === "risk" &&
+      report.head_sha === input.head &&
+      report.status === "complete" &&
+      report.limitations.length === 0,
+  )?.risk;
+  const reviewLabel =
+    event === "APPROVE"
+      ? "approved"
+      : event === "REQUEST_CHANGES"
+        ? "changes requested"
+        : "incomplete";
+  const riskColors = { low: "2da44e", medium: "bf8700", high: "bc4c00", critical: "cf222e" };
+  const badge = (label: string, value: string, color: string): string =>
+    `![${label}: ${value}](https://img.shields.io/static/v1?label=${encodeURIComponent(label)}&message=${encodeURIComponent(value)}&color=${color}&style=flat-square)`;
+  const mergeLabel =
+    event !== "APPROVE"
+      ? "blocked"
+      : !risk
+        ? "blocked"
+        : risk.release
+          ? "human only"
+          : risk.level !== "low"
+            ? "human only"
+            : "CI gate pending";
+  const mergeReason =
+    event !== "APPROVE"
+      ? "Auto-merge blocked until the review is complete and blockers are resolved."
+      : !risk
+        ? "Auto-merge blocked: risk assessment unavailable."
+        : risk.release
+          ? "Human merge required: release preparation detected."
+          : risk.level !== "low"
+            ? `Human merge required: ${risk.level} risk; only low-risk changes qualify for auto-merge.`
+            : "Low-risk candidate only; auto-merge still requires passing CI, an unchanged PR, and an enabled merge gate.";
+  const completeCount = reports.filter(
+    (report) =>
+      report.head_sha === input.head &&
+      report.status === "complete" &&
+      report.limitations.length === 0,
+  ).length;
   const comments = synthesis.groups
     .filter((group) => group.finding_ids.length > 0)
     .map((group) => {
@@ -157,16 +196,33 @@ const main = (): void => {
         body: text(group.comment),
       };
     });
-  writeFileSync(
-    "context/review.json",
-    JSON.stringify({
-      body: [
-        `**${event.replaceAll("_", " ")}** · Risk: **${risk ? text(risk.level) : "unknown"}**.`,
-        ...errors.map(text),
-      ].join("\n\n"),
-      comments,
-    }),
-  );
+  const summary = [
+    [
+      badge(
+        "review",
+        reviewLabel,
+        event === "APPROVE" ? "2da44e" : event === "REQUEST_CHANGES" ? "cf222e" : "bf8700",
+      ),
+      badge("risk", risk?.level ?? "unknown", risk ? riskColors[risk.level] : "656d76"),
+      badge("auto-merge", mergeLabel, mergeLabel === "CI gate pending" ? "0969da" : "656d76"),
+    ].join(" "),
+    `**${event === "INCOMPLETE" ? "Review incomplete." : comments.length === 0 ? "No actionable findings." : `${comments.length} issue${comments.length === 1 ? "" : "s"} on the diff.`}** ${completeCount}/${roles.length} specialists complete.`,
+    mergeReason,
+    ...errors.map(text),
+    ...(risk
+      ? [
+          "<details>\n<summary>Why this risk level?</summary>\n",
+          `**Impact:** ${text(risk.impact)}`,
+          `**Likelihood:** ${text(risk.likelihood)}`,
+          text(risk.rationale),
+          "</details>",
+        ]
+      : []),
+  ].join("\n\n");
+  const body = `${summary}\n\n<details>\n<summary>Full review evidence</summary>\n\n${evidence}\n\n</details>`;
+  assert(body.length < 60000, "Review too long; refusing to truncate evidence");
+  writeFileSync("context/review.md", body);
+  writeFileSync("context/review.json", JSON.stringify({ body: summary, comments }));
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body);
   writeFileSync(
     "context/decision.json",

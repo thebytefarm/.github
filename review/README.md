@@ -49,7 +49,16 @@ YAML parsing uses the runner's existing `yq`. All roles use Codex's default mode
 - Job caps include setup: preparation 5 minutes, specialists 12 minutes, synthesis 5 minutes, publication/CI wait 35 minutes. Runner queues and provider limits add wall time. No automatic retries.
 - New invocations for a PR cancel older ones.
 - Tool schemas describe model output; code validates report/synthesis shapes, reviewer/commit identity, completeness, design's advisory-only constraint, standards citations, and preservation of every finding ID. Invalid output never approves.
-- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Findings are inline diff threads, grouped by root cause and location. Comments are 2–3 short sentences, capped at 75 words/600 characters, without headings, specialist IDs, or duplicate evidence. Overlong comments fail validation rather than being truncated. The review body contains only the decision and risk. Full original evidence remains in the artifacts. Invalid/out-of-diff anchors fail publication rather than silently falling back to a timeline roll-up.
+- All five complete, valid synthesis, no blockers → **Approve**. Any blocker → **Request changes**. Missing/partial/failed results → **Incomplete**, never approval. Findings are inline diff threads, grouped by root cause and location. Comments are 2–3 short sentences, capped at 75 words/600 characters, without headings, specialist IDs, or duplicate evidence. Overlong comments fail validation rather than being truncated. Invalid/out-of-diff anchors fail publication rather than silently falling back to a timeline roll-up.
+
+### Review presentation
+
+The review opens with three SVG badges: **review verdict**, **risk level**, and **auto-merge policy**. These are static Shields.io images with descriptive alt text; only fixed status labels are sent to Shields.io, never repository names, source, findings, or credentials. No dependency or image upload is needed. Text below the badges reports the issue count, specialist completion, and merge restriction even if images fail to load.
+
+Approval means no blocking defects were found—not that a change is low risk or eligible to merge. Elevated risk and detected release preparation show **human only**. A clean low-risk change shows **CI gate pending**, never a claim that CI passed or merging is enabled. The publisher independently rechecks release signals, current head/base, CI, and merge policy before merging.
+
+Impact, likelihood, and rationale appear once in a collapsed **Why this risk level?** section, without a second model-written summary repeating them. Actions summaries use the same compact layout; full original evidence remains in a separate collapsed section in the artifact and Actions summary. Inline issue comments stay short and badge-free.
+
 - Publication rechecks repository visibility and both PR SHAs. It writes `bytefarm/review` as success/failure/error after synthesis. A previous status is not evidence for merging: the gate requires this run's bound decision and current CI. Branch protection is not changed.
 
 ## Change risk and merge policy

@@ -22,7 +22,15 @@ export default function grade(output, context) {
         value.review.comments.length === expected.threads,
         "Duplicate or missing inline threads",
       );
-      check(value.review.body.length <= 100, "Review summary is verbose");
+      const visible = value.review.body
+        .split("<details>")[0]
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+        .trim();
+      check(visible.split(/\s+/).length <= 65, "Review summary is verbose");
+      check(
+        (value.review.body.match(/https:\/\/img.shields.io\//g) ?? []).length === 3,
+        "Missing decision/risk/merge badges",
+      );
       const bodies = value.review.comments.map((comment) => comment.body);
       for (const body of bodies) {
         check(
