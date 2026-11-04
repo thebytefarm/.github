@@ -1,0 +1,39 @@
+name: Update review progress
+description: Observe the next completed stage and update the existing sticky comment
+inputs:
+  token:
+    description: Publisher installation token used only by the comment action
+    required: true
+  read-token:
+    description: Read-only Actions token for job state and PR metadata
+    required: true
+  number:
+    description: Pull request number
+    required: true
+  head:
+    description: Initial reviewed head SHA
+    required: true
+  comment-id:
+    description: Existing sticky comment ID
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Observe the next completed stage
+      id: progress
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/../progress.mts"
+      env:
+        GH_TOKEN: ${{ inputs.read-token }}
+        PR_NUMBER: ${{ inputs.number }}
+        REVIEW_HEAD: ${{ inputs.head }}
+        PROGRESS_COMMENT_ID: ${{ inputs.comment-id }}
+    - name: Update the sticky progress comment
+      if: steps.progress.outputs.ready == 'true'
+      uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+      with:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        number_force: ${{ inputs.number }}
+        header: bytefarm-review-progress
+        path: context/progress.md
+        skip_unchanged: true

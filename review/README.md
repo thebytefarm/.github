@@ -59,6 +59,14 @@ Approval means no blocking defects were found—not that a change is low risk or
 
 Impact, likelihood, and rationale appear once in a collapsed **Why this risk level?** section, without a second model-written summary repeating them. Actions summaries use the same compact layout; full original evidence remains in a separate collapsed section in the artifact and Actions summary. Inline issue comments stay short and badge-free.
 
+### Live progress
+
+With publication enabled, an independent progress job posts a sticky timeline comment before checking out code or installing anything. It uses `marocchino/sticky-pull-request-comment` **v3.0.5**, pinned to full commit `5770ad5eb8f42dd2c4f34da00c94c5381e49af88`. The same comment is updated rather than recreated, including on subsequent runs.
+
+The dashboard tracks preparation, each of the five specialists, synthesis, and publication/merge gating from actual Actions job state. It observes running/completed transitions every 20 seconds; concurrent transitions may be combined into one update. Runner scheduling and the initial read-only validation/token exchange are the only prerequisites to the first comment. The observer never holds up worker jobs and never invokes a model or executes PR code.
+
+Updates stop if the PR moves or a newer run owns the comment. Failed preparation, interrupted progress reporting, and completed publication have explicit terminal states. A completed workflow is not described as approval or a successful merge; the published review and run remain authoritative. Progress is disabled for private repositories and artifact-only runs. Like the existing publisher, it uses Pullfrog's installation identity only for non-agent GitHub writes; its Actions token is read-only and it has no model secret or status-write permission.
+
 - Publication rechecks repository visibility and both PR SHAs. It writes `bytefarm/review` as success/failure/error after synthesis. A previous status is not evidence for merging: the gate requires this run's bound decision and current CI. Branch protection is not changed.
 
 ## Change risk and merge policy
@@ -81,7 +89,7 @@ Release titles/branches/labels, changelogs, prerelease configuration, release ma
 - A named Codex permission profile grants minimal system-runtime reads, the exact native Codex executable needed for Linux sandbox re-execution, and the explicit review inputs. It does not grant access to the executable's parent installation directory. It denies tool filesystem writes, network access, authentication home, Git metadata, `/proc`, and service sockets. Synthesis gets only the collected reports. Nested symlink targets must still satisfy the sandbox policy.
 - Codex runs outside either checkout with automatic project-document loading disabled; prompts explicitly direct it to base-branch standards. No untrusted head config, rules, hooks, or home MCP configuration is loaded. The generated home has no MCP servers or plugins.
 - The supervisor starts Codex as the runner UID with cleared supplementary groups/capabilities and `no_new_privs`. Its environment contains only PATH, HOME, CODEX_HOME, and LANG; model tools inherit no runner environment and receive only a fixed system PATH. No GitHub tokens, OIDC variables, provider API keys, or raw login JSON are forwarded. GNU timeout kills the Codex process group at the configured deadline. Failure never falls back to an unsandboxed mode.
-- **Publication** is a separate job with no model invocation or model secret. Only it receives OIDC permission and obtains the Pullfrog installation token for reviews and merging. Commit statuses use its separate Actions token with `statuses: write`; preparation, specialists, and synthesis receive no status-write permission. Reusable callers must allow that permission ceiling.
+- **Publication and progress** are separate non-agent jobs with no model invocation or model secret. They receive OIDC permission and obtain a Pullfrog installation token: the publisher submits reviews/merges, while progress updates only the sticky comment through the pinned action. Commit statuses use the publisher's separate Actions token with `statuses: write`; preparation, specialists, synthesis, and progress receive no status-write permission. Reusable callers must allow that permission ceiling.
 
 ```text
 engine/                 # Pinned trusted supervisor; not granted to Codex tools
