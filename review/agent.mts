@@ -49,6 +49,7 @@ export function permissionConfig(
     "project_doc_max_bytes = 0",
     "[shell_environment_policy]",
     'inherit = "none"',
+    'set = { PATH = "/usr/bin:/bin:/usr/sbin:/sbin" }',
     "[permissions.review.network]",
     "enabled = false",
     "[permissions.review.filesystem]",

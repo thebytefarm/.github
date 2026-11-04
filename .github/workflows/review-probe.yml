@@ -1,9 +1,0 @@
-name: Review scheduling probe
-on: workflow_call
-permissions: {}
-jobs:
-  probe:
-    runs-on: ubuntu-24.04
-    permissions: {}
-    steps:
-      - run: echo 'Reusable workflow scheduled successfully; no credentials accessed.'

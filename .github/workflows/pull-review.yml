@@ -26,16 +26,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  diagnostics:
-    runs-on: ubuntu-24.04
-    permissions: {}
-    steps:
-      - name: Verify reusable workflow scheduling
-        run: printf '%s\n' "$EVENT_NAME" "$REPO_OWNER" "$REPO_PRIVATE"
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_PRIVATE: ${{ github.event.repository.private }}
   prepare:
     if: github.repository_owner == 'thebytefarm' && github.event.repository.private == false
     runs-on: ubuntu-24.04

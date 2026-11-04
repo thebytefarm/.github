@@ -43,6 +43,7 @@ it("denies tool writes, network, credentials, and Git metadata through a named C
   assert.match(config, /approval_policy = "never"/);
   assert.match(config, /\[permissions.review.network\]\nenabled = false/);
   assert.match(config, /inherit = "none"/);
+  assert.match(config, /set = \{ PATH = "\/usr\/bin:\/bin:\/usr\/sbin:\/sbin" \}/);
   assert.match(config, /private-auth" = "deny"/);
   assert.match(config, /source\/\.git" = "deny"/);
   assert.doesNotMatch(config, /"write"|":root"|workspace_roots/);
@@ -218,6 +219,13 @@ it("gates the review matrix before evaluating missing preparation outputs", () =
     prepare,
     /assert\.equal\(JSON\.parse\(gh\(`repos\/\$\{repo\}`\)\)\.visibility, "public"\)/,
   );
+});
+
+it("normalizes manual PR-number strings before calling the typed reusable workflow", () => {
+  for (const path of ["../.github/workflows/pr-review.yml", "./caller.example.yml"]) {
+    const caller = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert(caller.includes("pr-number: ${{ fromJSON(github.event.inputs.pr-number) }}"));
+  }
 });
 
 it(
