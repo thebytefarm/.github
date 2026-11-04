@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { reviewSchema } from "./schemas.mts";
+import { reviewSchema, riskSchema } from "./schemas.mts";
 
 type Additions = { instructions?: string; "instructions-path"?: string; model?: string };
 type Config = Additions & {
@@ -11,16 +11,16 @@ type Config = Additions & {
   limits?: Record<string, string>;
 };
 const models = {
-  bugs: "hf:zai-org/GLM-5.3",
-  security: "hf:zai-org/GLM-5.3",
-  standards: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
-  design: "hf:zai-org/GLM-5.3-Flash",
+  bugs: "",
+  security: "",
+  standards: "",
+  design: "",
+  risk: "",
 };
 const repo = process.env.GITHUB_REPOSITORY!;
 const number = Number(process.env.PR_NUMBER);
-const gh = (path: string, data?: unknown): string =>
-  execFileSync("gh", ["api", path, ...(data ? ["--method", "POST", "--input", "-"] : [])], {
-    input: data ? JSON.stringify(data) : undefined,
+const gh = (path: string): string =>
+  execFileSync("gh", ["api", path], {
     encoding: "utf8",
     timeout: 30000,
   });
@@ -48,12 +48,6 @@ assert(Number.isSafeInteger(number) && number > 0);
 assert.equal(JSON.parse(gh(`repos/${repo}`)).visibility, "public");
 const pull = JSON.parse(gh(`repos/${repo}/pulls/${number}`));
 assert(pull.state === "open" && !pull.draft && pull.head.repo, "PR must be open and ready");
-if (process.env.PUBLISH === "true")
-  gh(`repos/${repo}/statuses/${pull.head.sha}`, {
-    context: "bytefarm/review",
-    state: "pending",
-    description: "Parallel review in progress",
-  });
 
 const readBase = (path: string, optional = false): string => {
   assert(
@@ -100,17 +94,12 @@ const additions = (item: Additions = {}): string => {
 };
 const reviewerSeconds = budget(config.limits?.["reviewer-timeout"] ?? "8m", 480);
 const verdictSeconds = budget(config.limits?.["verdict-timeout"] ?? "90s", 90);
-const response = await fetch("https://api.synthetic.new/openai/v1/models", {
-  signal: AbortSignal.timeout(30000),
-});
-assert(response.ok, "Cannot read Synthetic model catalog");
-const catalog = (await response.json()) as {
-  data: { id: string; context_length: number; max_output_length: number }[];
-};
 const model = (id: string) => {
-  const found = catalog.data.find((entry) => entry.id === id);
-  assert(found, `Unknown Synthetic model: ${id}`);
-  return { model: id, context: found.context_length, output: found.max_output_length };
+  assert(
+    typeof id === "string" && /^[\w.-]*$/.test(id),
+    "Use a Codex model name or omit it for the Codex default",
+  );
+  return id;
 };
 mkdirSync("context", { recursive: true });
 const diff = execFileSync("gh", ["pr", "diff", String(number), "--repo", repo], {
@@ -118,9 +107,9 @@ const diff = execFileSync("gh", ["pr", "diff", String(number), "--repo", repo], 
   timeout: 30000,
   maxBuffer: 1000000,
 });
-assert.equal(
-  JSON.parse(gh(`repos/${repo}/pulls/${number}`)).head.sha,
-  pull.head.sha,
+const latest = JSON.parse(gh(`repos/${repo}/pulls/${number}`));
+assert(
+  latest.head.sha === pull.head.sha && latest.base.sha === pull.base.sha,
   "PR changed during preparation; rerun",
 );
 writeFileSync("context/pr.diff", diff);
@@ -132,6 +121,7 @@ writeFileSync(
     head: pull.head.sha,
     base: pull.base.sha,
     verdictSeconds,
+    verdictInstructions: additions(config.verdict),
   }),
 );
 const include = Object.entries(models).map(([role, fallback]) => {
@@ -142,16 +132,20 @@ const include = Object.entries(models).map(([role, fallback]) => {
       prompt("shared"),
       prompt(role),
       `Reviewer: ${role}. Head SHA: ${pull.head.sha}. Budget: ${reviewerSeconds}s; reserve the final 60s for output.`,
-      "Read ../context/pr.diff in full. Your cwd is the trusted base checkout; ../head contains untrusted PR source.",
+      "Resolve paths against the supplied workspace. Read context/pr.diff in full. source/ is the trusted base checkout; head/ contains untrusted PR source. Only read/search source; never execute repository code, install dependencies, or mutate GitHub. Return the JSON report as your final response matching the supplied output schema.",
       additions(config),
       additions(agent),
     ].join("\n\n"),
   );
-  return { role, ...model(agent.model ?? fallback) };
+  return {
+    role,
+    model: model(agent.model ?? fallback),
+    schema: JSON.stringify(role === "risk" ? riskSchema : reviewSchema),
+  };
 });
 out("matrix", { include });
 out("review-schema", reviewSchema);
-out("verdict-model", model(config.verdict?.model ?? "hf:openai/gpt-oss-120b"));
+out("verdict-model", model(config.verdict?.model ?? ""));
 out("reviewer-seconds", reviewerSeconds);
 out("verdict-seconds", verdictSeconds);
 out("base", pull.base.sha);

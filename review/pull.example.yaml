@@ -6,24 +6,28 @@ instructions-path: ""
 
 reviewers:
   bugs:
-    model: hf:zai-org/GLM-5.3
+    model: "" # Use the Codex default, or specify a Codex model available to your subscription.
     instructions: ""
     instructions-path: ""
   security:
-    model: hf:zai-org/GLM-5.3
+    model: ""
     instructions: ""
     instructions-path: ""
   standards:
-    model: hf:deepseek-ai/DeepSeek-V4.1-Flash-1017
+    model: ""
     instructions: ""
     instructions-path: ""
   design:
-    model: hf:zai-org/GLM-5.3-Flash
+    model: ""
+    instructions: ""
+    instructions-path: ""
+  risk:
+    model: ""
     instructions: ""
     instructions-path: ""
 
 verdict:
-  model: hf:openai/gpt-oss-120b
+  model: ""
 
 limits:
   reviewer-timeout: 8m

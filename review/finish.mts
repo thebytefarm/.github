@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { verdictSchema } from "./schemas.mts";
+import { checkReport, checkVerdict, verdictSchema } from "./schemas.mts";
+import type { Risk } from "./merge-policy.mts";
 
 type Finding = {
   id: string;
@@ -12,6 +12,7 @@ type Finding = {
   evidence: string;
   blocking: boolean;
   standard: string;
+  severity: string;
 };
 type Report = {
   head_sha: string;
@@ -19,16 +20,18 @@ type Report = {
   status: string;
   limitations: string[];
   findings: Finding[];
+  risk?: Risk;
 };
-const roles = ["bugs", "security", "standards", "design"];
+const roles = ["bugs", "security", "standards", "design", "risk"];
 const text = (value: string): string =>
   value.replace(/[<>&@]/g, (char) => `&#${char.charCodeAt(0)};`);
 
-/** Checks the invariants that remain code-owned after Pullfrog's schema validation. */
+/** Checks code-owned approval invariants, independent of the model's recommendation. */
 export function decide(reports: Report[], sha: string): "APPROVE" | "REQUEST_CHANGES" {
   assert.equal(reports.length, roles.length, "Missing specialist");
   assert.equal(new Set(reports.map((report) => report.reviewer)).size, roles.length);
   for (const report of reports) {
+    checkReport(report);
     assert(roles.includes(report.reviewer) && report.head_sha === sha, "Wrong reviewer/commit");
     assert(report.status === "complete" && report.limitations.length === 0, "Review incomplete");
     for (const finding of report.findings) {
@@ -45,7 +48,7 @@ export function decide(reports: Report[], sha: string): "APPROVE" | "REQUEST_CHA
   return findings.some((finding) => finding.blocking) ? "REQUEST_CHANGES" : "APPROVE";
 }
 
-/** Prevents the cheaper model from omitting, duplicating, or inventing findings. */
+/** Prevents synthesis from omitting, duplicating, or inventing findings. */
 export function checkGroups(expected: string[], actual: string[]): void {
   assert.deepEqual([...actual].sort(), [...expected].sort(), "Synthesis lost or invented findings");
 }
@@ -56,6 +59,7 @@ const main = (): void => {
   const reports = roles.flatMap((role): Report[] => {
     try {
       const report = JSON.parse(readFileSync(`results/${role}.json`, "utf8")) as Report;
+      checkReport(report);
       assert.equal(report.reviewer, role);
       return [report];
     } catch {
@@ -77,7 +81,7 @@ const main = (): void => {
     const prompt = readFileSync(new URL("./prompts/verdict.md", import.meta.url), "utf8");
     writeFileSync(
       "context/verdict.md",
-      `${prompt}\nHead SHA: ${input.head}. Your cwd is the engine checkout; read only the supplied reports, not checkout source or instructions. Read ../context/reports.json. Budget: ${input.verdictSeconds}s; reserve 20s for output.`,
+      `${prompt}\nHead SHA: ${input.head}. Paths are workspace-relative; read only context/reports.json. Budget: ${input.verdictSeconds}s; reserve 20s for output.\n\n${input.verdictInstructions ?? ""}`,
     );
     appendFileSync(
       process.env.GITHUB_OUTPUT!,
@@ -89,7 +93,8 @@ const main = (): void => {
   const synthesis = (() => {
     try {
       assert.equal(process.env.SYNTHESIS_RESULT, "success", "Synthesis failed or skipped");
-      const result = JSON.parse(process.env.AGENT_RESULT ?? "");
+      const result = JSON.parse(readFileSync("context/synthesis.json", "utf8"));
+      checkVerdict(result);
       assert.equal(result.head_sha, input.head);
       checkGroups(
         reports.flatMap((report) => report.findings.map((finding) => finding.id)),
@@ -115,6 +120,12 @@ const main = (): void => {
   );
   const body = [
     `## ${event}`,
+    ...reports
+      .filter((report) => report.reviewer === "risk" && report.risk)
+      .map(
+        (report) =>
+          `### Change risk: ${text(report.risk!.level)}\n\nImpact: ${text(report.risk!.impact)}\n\nLikelihood: ${text(report.risk!.likelihood)}\n\n${text(report.risk!.rationale)}`,
+      ),
     text(synthesis.summary),
     ...errors.map(text),
     ...synthesis.groups.map((group) =>
@@ -131,33 +142,14 @@ const main = (): void => {
   assert(body.length < 60000, "Review too long; refusing to truncate evidence");
   writeFileSync("context/review.md", body);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body);
-  if (process.env.PUBLISH === "true") {
-    const api = (path: string, data?: unknown): string =>
-      execFileSync("gh", ["api", path, ...(data ? ["--method", "POST", "--input", "-"] : [])], {
-        input: data ? JSON.stringify(data) : undefined,
-        encoding: "utf8",
-        timeout: 30000,
-      });
-    const latest = JSON.parse(api(`repos/${input.repository}/pulls/${input.number}`));
-    assert.equal(JSON.parse(api(`repos/${input.repository}`)).visibility, "public");
-    assert(
-      latest.state === "open" &&
-        !latest.draft &&
-        latest.head.sha === input.head &&
-        latest.base.sha === input.base,
-      "PR moved; rerun instead of publishing stale results",
-    );
-    api(`repos/${input.repository}/pulls/${input.number}/reviews`, {
-      commit_id: input.head,
-      event: event === "INCOMPLETE" ? "COMMENT" : event,
-      body,
-    });
-    api(`repos/${input.repository}/statuses/${input.head}`, {
-      context: "bytefarm/review",
-      state: event === "APPROVE" ? "success" : event === "INCOMPLETE" ? "error" : "failure",
-      description: event,
-    });
-  }
+  writeFileSync(
+    "context/decision.json",
+    JSON.stringify({
+      ...input,
+      event,
+      risk: reports.find((report) => report.reviewer === "risk")?.risk,
+    }),
+  );
   assert.notEqual(event, "INCOMPLETE", "Review incomplete; no approval");
 };
 

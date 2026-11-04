@@ -2,18 +2,29 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkGroups, decide } from "./finish.mts";
 
 const sha = "a".repeat(40);
 const reports = () =>
-  ["bugs", "security", "standards", "design"].map((reviewer) => ({
+  ["bugs", "security", "standards", "design", "risk"].map((reviewer) => ({
     reviewer,
     head_sha: sha,
     status: "complete",
     limitations: [] as string[],
+    ...(reviewer === "risk"
+      ? {
+          risk: {
+            level: "low" as const,
+            impact: "Isolated change",
+            likelihood: "Covered by tests",
+            rationale: "Small and reversible",
+            release: false,
+          },
+        }
+      : {}),
     findings: [] as {
       id: string;
       path: string;
@@ -22,6 +33,7 @@ const reports = () =>
       evidence: string;
       blocking: boolean;
       standard: string;
+      severity: string;
     }[],
   }));
 const finding = (role: string, blocking = true) => ({
@@ -32,6 +44,7 @@ const finding = (role: string, blocking = true) => ({
   evidence: "Concrete scenario",
   blocking,
   standard: "AGENTS.md#Rule",
+  severity: "high",
 });
 
 it("approves only complete reviews without blockers", () => {
@@ -42,6 +55,20 @@ it("requests changes for any blocker, without majority voting", () => {
     report.reviewer === "bugs" ? { ...report, findings: [finding("bugs")] } : report,
   );
   assert.equal(decide(input, sha), "REQUEST_CHANGES");
+});
+it("requires a risk assessment without treating elevated risk as a defect", () => {
+  assert.throws(() =>
+    decide(
+      reports().map((report) => ({ ...report, risk: undefined })),
+      sha,
+    ),
+  );
+  for (const level of ["medium", "high", "critical"] as const) {
+    const input = reports().map((report) =>
+      report.risk ? { ...report, risk: { ...report.risk, level } } : report,
+    );
+    assert.equal(decide(input, sha), "APPROVE");
+  }
 });
 it("refuses missing, partial, limited, duplicate, and stale reports", () => {
   assert.throws(() => decide(reports().slice(1), sha));
@@ -98,16 +125,15 @@ it("preserves every finding exactly once during synthesis", () => {
   }
 });
 
-it("starts synthesis in a Git checkout and resolves the collected reports from there", (test) => {
+it("restricts synthesis to the collected reports without a GitHub identity", (test) => {
   const workspace = mkdtempSync(join(tmpdir(), "pull-review-synthesis-"));
   test.after(() => rmSync(workspace, { recursive: true, force: true }));
   const root = fileURLToPath(new URL("../", import.meta.url));
-  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", root, join(workspace, "engine")]);
   mkdirSync(join(workspace, "context"));
   mkdirSync(join(workspace, "results"));
   writeFileSync(
     join(workspace, "context/input.json"),
-    JSON.stringify({ head: sha, verdictSeconds: 90 }),
+    JSON.stringify({ head: sha, verdictSeconds: 90, verdictInstructions: "Summarize tersely." }),
   );
   for (const report of reports()) {
     writeFileSync(join(workspace, `results/${report.reviewer}.json`), JSON.stringify(report));
@@ -124,14 +150,70 @@ it("starts synthesis in a Git checkout and resolves the collected reports from t
   assert.match(readFileSync(output, "utf8"), /^complete=true$/m);
   const workflow = readFileSync(join(root, ".github/workflows/pull-review.yml"), "utf8");
   const synthesisStep = workflow
-    .split("- name: Summarize using the cheaper model")[1]
-    .split("env:")[0];
-  const cwdMatch = synthesisStep.match(/cwd: (\w+)/);
-  assert(cwdMatch, "Synthesis must configure a working directory");
-  const cwd = join(workspace, cwdMatch[1]);
-  execFileSync("git", ["diff", "--name-only", "HEAD"], { cwd, stdio: "pipe" });
+    .split("- name: Summarize with lower-effort Codex")[1]
+    .split("- name: Compute verdict")[0];
+  assert.match(synthesisStep, /node engine\/review\/agent.mts/);
+  assert.doesNotMatch(synthesisStep, /GH_TOKEN|id-token|pullfrog\/pullfrog/);
   const prompt = readFileSync(join(workspace, "context/verdict.md"), "utf8");
-  const reportsMatch = prompt.match(/Read (\S+)\. Budget:/);
-  assert(reportsMatch, "Synthesis prompt must locate its reports");
-  assert.deepEqual(JSON.parse(readFileSync(resolve(cwd, reportsMatch[1]), "utf8")), reports());
+  assert.match(prompt, /read only context\/reports.json/);
+  assert.match(prompt, /Summarize tersely/);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(workspace, "context/reports.json"), "utf8")),
+    reports(),
+  );
+});
+
+it("renders a bound low-risk decision only after complete reviews and synthesis", (test) => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-decision-"));
+  test.after(() => rmSync(workspace, { recursive: true, force: true }));
+  mkdirSync(join(workspace, "context"));
+  mkdirSync(join(workspace, "results"));
+  writeFileSync(
+    join(workspace, "context/input.json"),
+    JSON.stringify({
+      repository: "thebytefarm/fixture",
+      number: 7,
+      head: sha,
+      base: "b".repeat(40),
+    }),
+  );
+  for (const report of reports())
+    writeFileSync(join(workspace, `results/${report.reviewer}.json`), JSON.stringify(report));
+  writeFileSync(
+    join(workspace, "context/synthesis.json"),
+    JSON.stringify({ head_sha: sha, summary: "No findings", groups: [] }),
+  );
+  const cli = fileURLToPath(new URL("./finish.mts", import.meta.url));
+  execFileSync(process.execPath, [cli, "render"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      REVIEW_RESULT: "success",
+      SYNTHESIS_RESULT: "success",
+      GITHUB_STEP_SUMMARY: "",
+    },
+  });
+  const decision = JSON.parse(readFileSync(join(workspace, "context/decision.json"), "utf8"));
+  assert.equal(decision.event, "APPROVE");
+  assert.equal(decision.head, sha);
+  assert.equal(decision.risk.level, "low");
+  assert.equal(decision.risk.release, false);
+  const partial = { ...reports()[0], status: "partial", limitations: ["Missing context"] };
+  writeFileSync(join(workspace, "results/bugs.json"), JSON.stringify(partial));
+  assert.throws(() =>
+    execFileSync(process.execPath, [cli, "render"], {
+      cwd: workspace,
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        REVIEW_RESULT: "success",
+        SYNTHESIS_RESULT: "success",
+        GITHUB_STEP_SUMMARY: "",
+      },
+    }),
+  );
+  assert.equal(
+    JSON.parse(readFileSync(join(workspace, "context/decision.json"), "utf8")).event,
+    "INCOMPLETE",
+  );
 });
